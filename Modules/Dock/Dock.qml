@@ -243,7 +243,104 @@ Loader {
         return appData.appId;
       }
 
+      function checkMatch(app, win) {
+        if (!app || !win) return { "matched": false, "exactTitle": false };
+        const normWinId = normalizeAppId(win.appId);
+        const normAppId = normalizeAppId(app.appId);
+        const toplevelAppId = app.toplevel ? normalizeAppId(app.toplevel.appId) : "";
+
+        let idMatch = (normAppId === normWinId) || (toplevelAppId === normWinId);
+        if (!idMatch) {
+          const resApp = normalizeAppId(resolveToDesktopEntryId(app.appId));
+          const resWin = normalizeAppId(resolveToDesktopEntryId(win.appId));
+          idMatch = (resApp === normWinId) || (resWin === normAppId) || (resApp === resWin);
+        }
+        if (!idMatch) return { "matched": false, "exactTitle": false };
+
+        const appTitle = (app.title || (app.toplevel ? app.toplevel.title : "") || "").trim();
+        const winTitle = (win.title || "").trim();
+        const titleMatch = (appTitle !== "" && winTitle !== "" && (appTitle === winTitle || appTitle.indexOf(winTitle) !== -1 || winTitle.indexOf(appTitle) !== -1));
+
+        return { "matched": true, "exactTitle": titleMatch };
+      }
+
       function sortDockApps(apps) {
+        if (!apps || apps.length === 0) {
+          return apps;
+        }
+
+        // Check if compositor window list is available for dynamic synchronization
+        if (typeof CompositorService !== 'undefined' && CompositorService.windows && CompositorService.windows.count > 0) {
+          const running = [];
+          const pinnedNotRunning = [];
+
+          apps.forEach(app => {
+                         if (!app) return;
+                         if (app.toplevel || app.type === "running" || app.type === "pinned-running") {
+                           running.push(app);
+                         } else {
+                           pinnedNotRunning.push(app);
+                         }
+                       });
+
+          const compWindows = [];
+          for (let i = 0; i < CompositorService.windows.count; i++) {
+            compWindows.push(CompositorService.windows.get(i));
+          }
+
+          // Slot array matching compWindows order
+          const matchedPerSlot = new Array(compWindows.length).fill(null);
+          const remainingRunning = [...running];
+
+          // Pass 1: exact appId + title match
+          for (let i = 0; i < compWindows.length; i++) {
+            const win = compWindows[i];
+            const idx = remainingRunning.findIndex(app => {
+                                                     const res = checkMatch(app, win);
+                                                     return res.matched && res.exactTitle;
+                                                   });
+            if (idx !== -1) {
+              matchedPerSlot[i] = remainingRunning[idx];
+              remainingRunning.splice(idx, 1);
+            }
+          }
+
+          // Pass 2: appId match for remaining empty slots
+          for (let i = 0; i < compWindows.length; i++) {
+            if (matchedPerSlot[i] !== null) continue;
+            const win = compWindows[i];
+            const idx = remainingRunning.findIndex(app => {
+                                                     const res = checkMatch(app, win);
+                                                     return res.matched;
+                                                   });
+            if (idx !== -1) {
+              matchedPerSlot[i] = remainingRunning[idx];
+              remainingRunning.splice(idx, 1);
+            }
+          }
+
+          // Collect sorted running apps according to physical Niri column order
+          const sortedRunning = [];
+          for (let i = 0; i < matchedPerSlot.length; i++) {
+            if (matchedPerSlot[i] !== null) {
+              sortedRunning.push(matchedPerSlot[i]);
+            }
+          }
+
+          // Append any remaining running apps (e.g. unlisted or floating)
+          remainingRunning.forEach(app => sortedRunning.push(app));
+
+          // Pinned-not-running apps are sorted by pinnedApps order and placed at the end
+          const pinnedOrder = Settings.data.dock.pinnedApps || [];
+          pinnedNotRunning.sort((a, b) => {
+                                  const idxA = pinnedOrder.indexOf(a.appId);
+                                  const idxB = pinnedOrder.indexOf(b.appId);
+                                  return (idxA !== -1 ? idxA : 9999) - (idxB !== -1 ? idxB : 9999);
+                                });
+
+          return [...sortedRunning, ...pinnedNotRunning];
+        }
+
         if (!sessionAppOrder || sessionAppOrder.length === 0) {
           return apps;
         }
@@ -284,6 +381,50 @@ Loader {
         dockApps = list;
         sessionAppOrder = dockApps.map(getAppKey);
         savePinnedOrder();
+
+        // Two-way synchronization: moving a running window icon in the dock moves its column in Niri!
+        if (item && (item.toplevel || item.type === "running" || item.type === "pinned-running")) {
+          moveRunningWindowToColumn(item, toIndex);
+        }
+      }
+
+      function moveRunningWindowToColumn(item, targetDockIndex) {
+        if (!item || typeof CompositorService === 'undefined' || !CompositorService.isNiri || !CompositorService.windows)
+          return;
+
+        let targetWinId = null;
+        for (let i = 0; i < CompositorService.windows.count; i++) {
+          const win = CompositorService.windows.get(i);
+          const res = checkMatch(item, win);
+          if (res.matched && res.exactTitle) {
+            targetWinId = win.id;
+            break;
+          }
+        }
+        if (targetWinId === null) {
+          for (let i = 0; i < CompositorService.windows.count; i++) {
+            const win = CompositorService.windows.get(i);
+            const res = checkMatch(item, win);
+            if (res.matched) {
+              targetWinId = win.id;
+              break;
+            }
+          }
+        }
+
+        if (targetWinId !== null) {
+          let runningCount = 0;
+          for (let i = 0; i < dockApps.length; i++) {
+            if (dockApps[i] && (dockApps[i].toplevel || dockApps[i].type === "running" || dockApps[i].type === "pinned-running")) {
+              runningCount++;
+            }
+          }
+          const targetCol = Math.max(1, Math.min(targetDockIndex + 1, runningCount));
+          // Try background move with --id without focus change; fallback to focus-window for older Niri versions
+          const cmd = "niri msg action move-column-to-index " + targetCol + " --id " + targetWinId + " 2>/dev/null || " +
+                      "(niri msg action focus-window --id " + targetWinId + " && niri msg action move-column-to-index " + targetCol + ")";
+          Quickshell.execDetached(["sh", "-c", cmd]);
+        }
       }
 
       function savePinnedOrder() {
@@ -587,33 +728,36 @@ Loader {
         root.groupCycleIndices = nextCycleState;
 
         // Sync session order if needed
-        // Instead of resetting everything when length changes, we reconcile the keys
-        if (!sessionAppOrder || sessionAppOrder.length === 0) {
+        if (typeof CompositorService !== 'undefined' && CompositorService.windows && CompositorService.windows.count > 0) {
           sessionAppOrder = dockApps.map(getAppKey);
         } else {
-          const currentKeys = new Set(dockApps.map(getAppKey));
-          const existingKeys = new Set();
-          const newOrder = [];
+          if (!sessionAppOrder || sessionAppOrder.length === 0) {
+            sessionAppOrder = dockApps.map(getAppKey);
+          } else {
+            const currentKeys = new Set(dockApps.map(getAppKey));
+            const existingKeys = new Set();
+            const newOrder = [];
 
-          // Keep existing keys that are still present
-          sessionAppOrder.forEach(key => {
-                                    if (currentKeys.has(key)) {
-                                      newOrder.push(key);
-                                      existingKeys.add(key);
-                                    }
-                                  });
+            // Keep existing keys that are still present
+            sessionAppOrder.forEach(key => {
+                                      if (currentKeys.has(key)) {
+                                        newOrder.push(key);
+                                        existingKeys.add(key);
+                                      }
+                                    });
 
-          // Add new keys at the end
-          dockApps.forEach(app => {
-                             const key = getAppKey(app);
-                             if (!existingKeys.has(key)) {
-                               newOrder.push(key);
-                               existingKeys.add(key);
-                             }
-                           });
+            // Add new keys at the end
+            dockApps.forEach(app => {
+                               const key = getAppKey(app);
+                               if (!existingKeys.has(key)) {
+                                 newOrder.push(key);
+                                 existingKeys.add(key);
+                               }
+                             });
 
-          if (JSON.stringify(newOrder) !== JSON.stringify(sessionAppOrder)) {
-            sessionAppOrder = newOrder;
+            if (JSON.stringify(newOrder) !== JSON.stringify(sessionAppOrder)) {
+              sessionAppOrder = newOrder;
+            }
           }
         }
       }
@@ -880,6 +1024,35 @@ Loader {
           implicitWidth: dockContainerWrapper.width + (isVertical ? slideDistance : 0)
           implicitHeight: dockContainerWrapper.height + (!isVertical ? slideDistance : 0)
 
+          onWidthChanged: {
+            dockRedrawLoop.ticks = 0;
+            dockRedrawLoop.restart();
+          }
+
+          Timer {
+            id: dockRedrawLoop
+            interval: 30
+            repeat: true
+            property int ticks: 0
+            onTriggered: {
+              dockContainerWrapper.opacity = (dockContainerWrapper.opacity === 1.0 ? 0.9999 : 1.0);
+              ticks++;
+              if (ticks >= 6) {
+                stop();
+                ticks = 0;
+                dockContainerWrapper.opacity = 1.0;
+              }
+            }
+          }
+
+          Connections {
+            target: dockContainerWrapper
+            function onWidthChanged() {
+              dockRedrawLoop.ticks = 0;
+              dockRedrawLoop.restart();
+            }
+          }
+
           // Position based on dock setting
           anchors.top: dockPosition === "top"
           anchors.bottom: dockPosition === "bottom"
@@ -931,8 +1104,8 @@ Loader {
               y: dockWindow.slideY
             }
 
-            // Enable layer caching to reduce GPU usage from continuous animations
-            layer.enabled: true
+            // Disable layer caching: caching dynamic resizing items causes texture stretch/squish distortion
+            layer.enabled: false
 
             DockContent {
               id: dockContent
