@@ -384,13 +384,13 @@ namespace shell::dock {
         if (vert) {
           instance.viewport->setPosition(0.0F, geo.panelY);
           instance.viewport->setSize(w, geo.panelH);
-          instance.row->setPosition(geo.panelX, 0.0F);
+          instance.row->setPosition(geo.panelX, -instance.scrollOffset);
           instance.row->setSize(geo.panelW, contentLength);
           instance.maxScrollOffset = std::max(0.0F, contentLength - geo.panelH);
         } else {
           instance.viewport->setPosition(geo.panelX, 0.0F);
           instance.viewport->setSize(geo.panelW, h);
-          instance.row->setPosition(0.0F, geo.panelY);
+          instance.row->setPosition(-instance.scrollOffset, geo.panelY);
           instance.row->setSize(contentLength, geo.panelH);
           instance.maxScrollOffset = std::max(0.0F, contentLength - geo.panelW);
         }
@@ -424,6 +424,10 @@ namespace shell::dock {
       const auto startGeo = instance.currentPanelGeometry;
       const auto endGeo = targetPanelGeometry;
       instance.targetPanelGeometry = targetPanelGeometry;
+
+      // Synchronize newly created row/viewport positions immediately to startGeo on frame 0
+      // so already opened icons do not jump before the animation begins.
+      applyLayout(startGeo);
 
       // On expand: pre-expand compositor blur once so the capsule animates over the blurred backdrop
       // without per-frame Wayland IPC or compositor texture recreation across any GPU (AMD, Intel, NVIDIA).
