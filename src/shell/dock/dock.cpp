@@ -294,6 +294,59 @@ namespace {
     return !activeWorkspaceHasWindows(platform, output);
   }
 
+  [[nodiscard]] bool dockRequiresSurfaceRecreation(
+      const DockConfig& oldCfg, const DockConfig& newCfg, const ShellConfig::ShadowConfig& oldShadow,
+      const ShellConfig::ShadowConfig& newShadow, const std::vector<std::string>& oldBarLayerStack,
+      const std::vector<std::string>& newBarLayerStack
+  ) {
+    if (oldBarLayerStack != newBarLayerStack) {
+      return true;
+    }
+    if (oldShadow != newShadow) {
+      return true;
+    }
+    if (oldCfg.enabled != newCfg.enabled) {
+      return true;
+    }
+    if (oldCfg.position != newCfg.position) {
+      return true;
+    }
+    if (oldCfg.activeMonitorOnly != newCfg.activeMonitorOnly) {
+      return true;
+    }
+    if (oldCfg.layer != newCfg.layer) {
+      return true;
+    }
+    if (oldCfg.marginEnds != newCfg.marginEnds) {
+      return true;
+    }
+    if (oldCfg.marginEdge != newCfg.marginEdge) {
+      return true;
+    }
+    if (oldCfg.reserveSpace != newCfg.reserveSpace) {
+      return true;
+    }
+    if (oldCfg.iconSize != newCfg.iconSize) {
+      return true;
+    }
+    if (oldCfg.mainAxisPadding != newCfg.mainAxisPadding) {
+      return true;
+    }
+    if (oldCfg.crossAxisPadding != newCfg.crossAxisPadding) {
+      return true;
+    }
+    if (oldCfg.itemSpacing != newCfg.itemSpacing) {
+      return true;
+    }
+    if (oldCfg.autoHide != newCfg.autoHide) {
+      return true;
+    }
+    if (oldCfg.smartAutoHide != newCfg.smartAutoHide) {
+      return true;
+    }
+    return false;
+  }
+
 } // namespace
 
 // ── Lifecycle ─────────────────────────────────────────────────────────────────
@@ -313,6 +366,38 @@ bool Dock::initialize(CompositorPlatform& platform, ConfigService* config, Rende
         const auto& newShadow = m_config->config().shell.shadow;
         const auto newBarLayerStack = barLayerStackSignature(m_config->config());
         if (newCfg == m_lastDockConfig && newShadow == m_lastShadow && newBarLayerStack == m_lastBarLayerStack) {
+          return;
+        }
+        if (!dockRequiresSurfaceRecreation(
+                m_lastDockConfig, newCfg, m_lastShadow, newShadow, m_lastBarLayerStack, newBarLayerStack
+            )) {
+          kLog.info("updating dock config in-place without surface recreation");
+          m_lastDockConfig = newCfg;
+          m_lastShadow = newShadow;
+          m_lastBarLayerStack = newBarLayerStack;
+          for (auto& instance : m_instances) {
+            if (instance != nullptr) {
+              const WaylandOutput* waylandOut = nullptr;
+              if (m_platform != nullptr) {
+                for (const auto& out : m_platform->outputs()) {
+                  if (out.name == instance->outputName) {
+                    waylandOut = &out;
+                    break;
+                  }
+                }
+              }
+              if (waylandOut != nullptr) {
+                instance->config = ConfigService::resolveForOutput(newCfg, *waylandOut);
+              } else {
+                instance->config = newCfg;
+              }
+              if (instance->surface != nullptr) {
+                instance->surface->requestUpdate();
+                instance->surface->requestLayout();
+                instance->surface->requestRedraw();
+              }
+            }
+          }
           return;
         }
         if (newBarLayerStack != m_lastBarLayerStack && newCfg == m_lastDockConfig && newShadow == m_lastShadow) {

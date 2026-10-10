@@ -334,7 +334,13 @@ namespace shell::dock {
       instance.panel->setRadii(concave.radii);
     }
 
-    const auto totalItemCount = instance.items.size() + shell::dock::dockLauncherButtonCount(cfg);
+    std::size_t activeItemCount = 0;
+    for (const auto& item : instance.items) {
+      if (!item.exiting) {
+        ++activeItemCount;
+      }
+    }
+    const auto totalItemCount = activeItemCount + shell::dock::dockLauncherButtonCount(cfg);
     const auto targetPanelGeometry = shell::dock::computePanelGeometry(cfg, shadowConfig, w, h, totalItemCount);
     const auto contentLength = static_cast<float>(shell::dock::dockContentSize(cfg, totalItemCount));
 
@@ -405,7 +411,19 @@ namespace shell::dock {
 
     const bool targetChanged = !instance.hasInitialGeometry || (instance.targetPanelGeometry != targetPanelGeometry);
 
-    if (!instance.hasInitialGeometry) {
+    const bool isDockHidden = dockUsesAnyAutoHide(cfg) && instance.hideOpacity < 0.05F;
+    if (isDockHidden) {
+      if (instance.resizeAnimId != 0) {
+        instance.animations.cancel(instance.resizeAnimId);
+        instance.resizeAnimId = 0;
+      }
+      instance.currentPanelGeometry = targetPanelGeometry;
+      instance.targetPanelGeometry = targetPanelGeometry;
+      instance.hasInitialGeometry = true;
+      applyLayout(targetPanelGeometry);
+      applyDockCompositorBlur(instance, cfg, &targetPanelGeometry);
+      syncDockAutoHideInputRegion(instance, cfg, targetPanelGeometry);
+    } else if (!instance.hasInitialGeometry) {
       if (instance.resizeAnimId != 0) {
         instance.animations.cancel(instance.resizeAnimId);
         instance.resizeAnimId = 0;

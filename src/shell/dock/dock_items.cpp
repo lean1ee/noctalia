@@ -399,6 +399,85 @@ namespace shell::dock {
     return row;
   }
 
+  DockItemView* findDockItemById(DockInstance& instance, std::string_view idLower) {
+    for (auto& item : instance.items) {
+      if (item.idLower == idLower) {
+        return &item;
+      }
+    }
+    return nullptr;
+  }
+
+  void triggerDockItemTapPulse(DockInstance& instance, std::size_t itemIndex) {
+    if (itemIndex >= instance.items.size()) {
+      return;
+    }
+    auto& item = instance.items[itemIndex];
+    Node* iconNode =
+        item.iconImage != nullptr ? static_cast<Node*>(item.iconImage) : static_cast<Node*>(item.iconGlyph);
+    if (iconNode == nullptr) {
+      return;
+    }
+    if (item.tapAnimId != 0) {
+      instance.animations.cancel(item.tapAnimId);
+      item.tapAnimId = 0;
+    }
+
+    const float baseScale = item.visualScale > 0.0F ? item.visualScale : 1.0F;
+    const float tapDownScale = baseScale * 0.92F;
+    const std::string idLower = item.idLower;
+
+    item.tapAnimId = instance.animations.animate(
+        baseScale, tapDownScale, 60.0F, Easing::EaseOutCubic,
+        [&instance, idLower](float s) {
+          auto* itm = findDockItemById(instance, idLower);
+          if (itm == nullptr)
+            return;
+          Node* node =
+              itm->iconImage != nullptr ? static_cast<Node*>(itm->iconImage) : static_cast<Node*>(itm->iconGlyph);
+          if (node != nullptr) {
+            node->setScale(s);
+          }
+          if (instance.surface != nullptr) {
+            instance.surface->requestRedraw();
+          }
+        },
+        [&instance, idLower, tapDownScale, baseScale]() {
+          auto* itm = findDockItemById(instance, idLower);
+          if (itm == nullptr)
+            return;
+          Node* node =
+              itm->iconImage != nullptr ? static_cast<Node*>(itm->iconImage) : static_cast<Node*>(itm->iconGlyph);
+          if (node == nullptr)
+            return;
+          itm->tapAnimId = instance.animations.animate(
+              tapDownScale, baseScale, 90.0F, Easing::EaseOutBack,
+              [&instance, idLower](float s) {
+                auto* cur = findDockItemById(instance, idLower);
+                if (cur == nullptr)
+                  return;
+                Node* n =
+                    cur->iconImage != nullptr ? static_cast<Node*>(cur->iconImage) : static_cast<Node*>(cur->iconGlyph);
+                if (n != nullptr) {
+                  n->setScale(s);
+                }
+                if (instance.surface != nullptr) {
+                  instance.surface->requestRedraw();
+                }
+              },
+              [&instance, idLower]() {
+                auto* cur = findDockItemById(instance, idLower);
+                if (cur != nullptr) {
+                  cur->tapAnimId = 0;
+                }
+              },
+              itm->area
+          );
+        },
+        item.area
+    );
+  }
+
   void handleItemClick(DockInstance& instance, const DockItemAction& action, DockItemClickContext& context);
 
   std::unique_ptr<InputArea> createLauncherButton(
@@ -471,298 +550,565 @@ namespace shell::dock {
     return areaNode;
   }
 
+  std::unique_ptr<InputArea> createDockItemNode(
+      DockInstance& instance, const DockConfig& cfg, Renderer& renderer, DockItemSceneDependencies deps,
+      const DockItemModel& model, DockItemView& item, const std::shared_ptr<DockItemClickContext>& clickContext,
+      bool itemPinned
+  ) {
+    const DockEdge edge = cfg.position;
+    const bool vert = shell::dock::isVerticalEdge(edge);
+    const auto iSize = static_cast<float>(cfg.iconSize);
+    const int iconDecodeTarget = dockIconDecodeTargetSize(cfg);
+    const float cellMain = iSize + 2.0F * kCellPad;
+    const float cellCross = iSize + 2.0F * kCellPad;
+
+    auto areaNode = ui::inputArea({});
+    const float initMain = cellMain * item.slotProgress;
+    if (!vert) {
+      areaNode->setSize(initMain, cellCross);
+    } else {
+      areaNode->setSize(cellCross, initMain);
+    }
+
+    std::string iconPath;
+    if (!model.entry.icon.empty()) {
+      iconPath = deps.iconResolver.resolve(model.entry.icon, iconDecodeTarget);
+    }
+    if (iconPath.empty()) {
+      if (const auto internal = internal_apps::metadataForDesktopEntry(model.entry); internal.has_value()) {
+        iconPath = internal->iconPath;
+      }
+    }
+    if (iconPath.empty()) {
+      iconPath = deps.iconResolver.resolve("application-x-executable", iconDecodeTarget);
+    }
+    auto iconImg = ui::image({
+        .width = iSize,
+        .height = iSize,
+        .configure = [&renderer, iconPath, iconDecodeTarget, &shell = deps.model.config.config().shell](Image& image) {
+          image.setAppIconColorization(effectiveShellAppIconColorizationTint(shell));
+          if (!iconPath.empty()) {
+            image.setSourceFile(renderer, iconPath, iconDecodeTarget, true);
+          }
+          image.setPosition(kCellPad, kCellPad);
+        },
+    });
+
+    if (iconImg->hasImage()) {
+      item.iconImage = static_cast<Image*>(areaNode->addChild(std::move(iconImg)));
+    } else {
+      item.iconGlyph = static_cast<Glyph*>(areaNode->addChild(
+          ui::glyph({
+              .glyph = "app-window",
+              .glyphSize = iSize,
+              .color = colorSpecFromRole(ColorRole::OnSurface),
+              .width = iSize,
+              .height = iSize,
+              .configure = [](Glyph& glyph) { glyph.setPosition(kCellPad, kCellPad); },
+          })
+      ));
+    }
+
+    if (cfg.showDots) {
+      const float dot = std::max(kDotMinSize, std::round(iSize * kDotSizeRatio));
+      const bool verticalDots = shell::dock::isVerticalEdge(edge);
+
+      for (auto& dotIndicator : item.dotIndicators) {
+        dotIndicator = static_cast<Box*>(areaNode->addChild(
+            ui::box({
+                .fill = colorSpecFromRole(ColorRole::Secondary),
+                .radius = dot * 0.5F,
+                .width = dot,
+                .height = dot,
+                .visible = false,
+                .configure = [verticalDots, edge, cellMain, dot](Box& box) {
+                  if (verticalDots) {
+                    const float x = edge == DockEdge::Left ? 1.0F : std::round(cellMain - dot - 1.0F);
+                    box.setPosition(x, std::round((cellMain - dot) * 0.5F));
+                  } else {
+                    const float y = edge == DockEdge::Bottom ? std::round(cellMain - dot - 1.0F) : 1.0F;
+                    box.setPosition(std::round((cellMain - dot) * 0.5F), y);
+                  }
+                },
+            })
+        ));
+      }
+    }
+
+    if (cfg.showInstanceCount) {
+      const float bd = std::max(kBadgeMinSize, iSize * kBadgeSizeRatio);
+
+      areaNode->addChild(
+          ui::box({
+              .out = &item.badge,
+              .radius = bd * 0.5F,
+              .width = bd,
+              .height = bd,
+              .visible = false,
+              .configure = [edge, iSize, bd](Box& box) {
+                applyBadgeVisual(&box, edge, kCellPad, kCellPad, iSize, bd, 1.0F);
+              },
+          })
+      );
+
+      item.badge->addChild(
+          ui::label({
+              .out = &item.badgeLabel,
+              .fontSize = bd * kBadgeFontRatio,
+              .fontWeight = FontWeight::Bold,
+              .maxLines = 1,
+              .visible = false,
+          })
+      );
+    }
+
+    auto* instPtr = &instance;
+    const std::string entryIdLower = model.idLower;
+
+    configureDockTooltip(*areaNode, cfg, dockItemTooltipText(model.entry));
+    areaNode->setAcceptedButtons(InputArea::buttonMask({BTN_LEFT, BTN_RIGHT}));
+
+    auto findItemIndex = [instPtr, entryIdLower]() -> std::size_t {
+      for (std::size_t i = 0; i < instPtr->items.size(); ++i) {
+        if (instPtr->items[i].idLower == entryIdLower) {
+          return i;
+        }
+      }
+      return 0;
+    };
+
+    areaNode->setOnPress([instPtr, clickContext, itemPinned, findItemIndex](const InputArea::PointerData& d) {
+      if (d.button != BTN_LEFT) {
+        return;
+      }
+      auto& drag = instPtr->drag;
+      const auto& dockCfg = instPtr->config;
+      const std::size_t curIdx = findItemIndex();
+      if (curIdx >= instPtr->items.size() || instPtr->items[curIdx].area == nullptr) {
+        return;
+      }
+      if (d.pressed) {
+        if (!itemPinned) {
+          return;
+        }
+        resetDockItemDragState(*instPtr);
+        drag.pinned = true;
+        drag.sourceIndex = curIdx;
+        drag.startMain = pointerMainOnRow(dockCfg, instPtr->items[curIdx].area, d.localX, d.localY);
+        drag.currentMain = drag.startMain;
+        drag.targetIndex = curIdx;
+        drag.holdTimer.start(kDragHoldDelay, [instPtr, curIdx]() {
+          if (instPtr->drag.sourceIndex == curIdx && !instPtr->drag.active) {
+            instPtr->drag.armed = true;
+            dismissDockTooltipImpl();
+          }
+        });
+        return;
+      }
+
+      if (drag.sourceIndex != curIdx) {
+        return;
+      }
+
+      if (drag.active) {
+        if (clickContext->callbacks.endDrag) {
+          clickContext->callbacks.endDrag(*instPtr, true);
+        }
+        return;
+      }
+
+      drag.holdTimer.stop();
+      if (drag.armed) {
+        if (clickContext->callbacks.endDrag) {
+          clickContext->callbacks.endDrag(*instPtr, false);
+        }
+      } else {
+        resetDockItemDragState(*instPtr);
+      }
+    });
+
+    areaNode->setOnMotion([instPtr, clickContext, itemPinned, findItemIndex](const InputArea::PointerData& d) {
+      const std::size_t curIdx = findItemIndex();
+      if (curIdx >= instPtr->items.size() || instPtr->items[curIdx].area == nullptr) {
+        return;
+      }
+      if (!itemPinned || instPtr->drag.sourceIndex != curIdx) {
+        return;
+      }
+      if (!instPtr->drag.armed && !instPtr->drag.active) {
+        return;
+      }
+
+      const auto& dockCfg = instPtr->config;
+      const float mainPos = pointerMainOnRow(dockCfg, instPtr->items[curIdx].area, d.localX, d.localY);
+      instPtr->drag.currentMain = mainPos;
+      if (instPtr->drag.active) {
+        if (clickContext->callbacks.updateDrag) {
+          clickContext->callbacks.updateDrag(*instPtr, mainPos);
+        }
+      } else if (instPtr->drag.armed && clickContext->callbacks.beginDrag) {
+        clickContext->callbacks.beginDrag(*instPtr, curIdx, mainPos);
+      }
+    });
+
+    DockItemAction action{
+        .entry = model.entry,
+        .idLower = model.idLower,
+        .startupWmClassLower = model.startupWmClassLower,
+        .windowLookupIdLower = model.windowLookupIdLower,
+        .windowLookupWmClassLower = model.windowLookupWmClassLower,
+    };
+
+    areaNode->setOnClick([action = std::move(action), instPtr, clickContext,
+                          findItemIndex](const InputArea::PointerData& d) {
+      if (d.button == BTN_RIGHT) {
+        if (clickContext->callbacks.openItemMenu) {
+          clickContext->callbacks.openItemMenu(*instPtr, action);
+        }
+        return;
+      }
+      if (d.button != BTN_LEFT) {
+        return;
+      }
+      if (instPtr->suppressItemClick) {
+        instPtr->suppressItemClick = false;
+        return;
+      }
+      if (instPtr->drag.active || instPtr->drag.armed) {
+        return;
+      }
+      const std::size_t curIdx = findItemIndex();
+      triggerDockItemTapPulse(*instPtr, curIdx);
+      handleItemClick(*instPtr, action, *clickContext);
+    });
+
+    return areaNode;
+  }
+
   void rebuildItems(
       DockInstance& instance, DockItemSceneDependencies deps, const DockSnapshot& snapshot,
       const DockItemCallbacks& callbacks
   ) {
     uiAssertNotRendering("shell::dock::rebuildItems");
-    if (instance.row == nullptr) {
-      return;
-    }
-
     if (instance.surface == nullptr) {
       return;
     }
     Renderer& renderer = instance.surface->renderTarget().renderer();
-
-    resetDockItemDragState(instance);
 
     const auto& cfg = instance.config;
     const DockEdge edge = cfg.position;
     const DockLauncherPosition launcherPosition = cfg.launcherPosition;
     const bool vert = shell::dock::isVerticalEdge(edge);
     const auto iSize = static_cast<float>(cfg.iconSize);
-    const int iconDecodeTarget = dockIconDecodeTargetSize(cfg);
+    const float cellMain = iSize + 2.0F * kCellPad;
+    const float cellCross = iSize + 2.0F * kCellPad;
+    const std::size_t pinnedCount = cfg.pinned.size();
+    const auto& itemModels = snapshot.items;
+
     auto clickContext = std::make_shared<DockItemClickContext>(DockItemClickContext{
         .callbacks = callbacks,
     });
 
-    for (auto& item : instance.items) {
-      if (item.scaleAnimId != 0) {
-        instance.animations.cancel(item.scaleAnimId);
-        item.scaleAnimId = 0;
+    if (instance.items.empty() || instance.row == nullptr) {
+      resetDockItemDragState(instance);
+
+      if (instance.row != nullptr && instance.row->parent() != nullptr) {
+        instance.row->parent()->removeChild(instance.row);
+        instance.row = nullptr;
       }
-      if (item.opacityAnimId != 0) {
-        instance.animations.cancel(item.opacityAnimId);
-        item.opacityAnimId = 0;
-      }
-    }
-
-    // Clear previous items by recreating the row.
-    if (instance.row != nullptr && instance.row->parent() != nullptr) {
-      instance.row->parent()->removeChild(instance.row);
-      instance.row = nullptr;
-    }
-    instance.items.clear();
-    instance.launcherArea = nullptr;
-    instance.launcherIconNode = nullptr;
-    instance.launcherVisualScale = -1.0F;
-    if (instance.launcherScaleAnimId != 0) {
-      instance.animations.cancel(instance.launcherScaleAnimId);
-      instance.launcherScaleAnimId = 0;
-    }
-
-    auto freshRow = makeDockItemRow(cfg, vert);
-    Node* rowParent = instance.viewport != nullptr ? static_cast<Node*>(instance.viewport)
-        : instance.slideRoot != nullptr            ? instance.slideRoot
-                                                   : static_cast<Node*>(instance.panel);
-    instance.row = static_cast<Flex*>(rowParent->addChild(std::move(freshRow)));
-    const auto& itemModels = snapshot.items;
-
-    if (launcherPosition == DockLauncherPosition::Start) {
-      instance.row->addChild(createLauncherButton(instance, cfg, renderer, clickContext));
-    }
-
-    // Reserve up-front so emplace_back never reallocates while lambdas hold raw pointers.
-    instance.items.reserve(itemModels.size());
-    const std::size_t pinnedCount = cfg.pinned.size();
-
-    for (std::size_t itemIndex = 0; itemIndex < itemModels.size(); ++itemIndex) {
-      const auto& model = itemModels[itemIndex];
-      auto& item = instance.items.emplace_back();
-      DockItemAction action{
-          .entry = model.entry,
-          .idLower = model.idLower,
-          .startupWmClassLower = model.startupWmClassLower,
-          .windowLookupIdLower = model.windowLookupIdLower,
-          .windowLookupWmClassLower = model.windowLookupWmClassLower,
-      };
-
-      const float cellMain = iSize + 2.0F * kCellPad;
-      const float cellCross = iSize + 2.0F * kCellPad;
-      auto areaNode = ui::inputArea({});
-      if (!vert) {
-        areaNode->setSize(cellMain, cellCross);
-      } else {
-        areaNode->setSize(cellCross, cellMain);
+      instance.items.clear();
+      instance.launcherArea = nullptr;
+      instance.launcherIconNode = nullptr;
+      instance.launcherVisualScale = -1.0F;
+      if (instance.launcherScaleAnimId != 0) {
+        instance.animations.cancel(instance.launcherScaleAnimId);
+        instance.launcherScaleAnimId = 0;
       }
 
-      std::string iconPath;
-      if (!model.entry.icon.empty()) {
-        iconPath = deps.iconResolver.resolve(model.entry.icon, iconDecodeTarget);
-      }
-      if (iconPath.empty()) {
-        if (const auto internal = internal_apps::metadataForDesktopEntry(model.entry); internal.has_value()) {
-          iconPath = internal->iconPath;
-        }
-      }
-      if (iconPath.empty()) {
-        iconPath = deps.iconResolver.resolve("application-x-executable", iconDecodeTarget);
-      }
-      auto iconImg = ui::image({
-          .width = iSize,
-          .height = iSize,
-          .configure = [&renderer, iconPath, iconDecodeTarget,
-                        &shell = deps.model.config.config().shell](Image& image) {
-            image.setAppIconColorization(effectiveShellAppIconColorizationTint(shell));
-            if (!iconPath.empty()) {
-              image.setSourceFile(renderer, iconPath, iconDecodeTarget, true);
-            }
-            image.setPosition(kCellPad, kCellPad);
-          },
-      });
+      auto freshRow = makeDockItemRow(cfg, vert);
+      Node* rowParent = instance.viewport != nullptr ? static_cast<Node*>(instance.viewport)
+          : instance.slideRoot != nullptr            ? instance.slideRoot
+                                                     : static_cast<Node*>(instance.panel);
+      instance.row = static_cast<Flex*>(rowParent->addChild(std::move(freshRow)));
 
-      if (iconImg->hasImage()) {
-        item.iconImage = static_cast<Image*>(areaNode->addChild(std::move(iconImg)));
-      } else {
-        item.iconGlyph = static_cast<Glyph*>(areaNode->addChild(
-            ui::glyph({
-                .glyph = "app-window",
-                .glyphSize = iSize,
-                .color = colorSpecFromRole(ColorRole::OnSurface),
-                .width = iSize,
-                .height = iSize,
-                .configure = [](Glyph& glyph) { glyph.setPosition(kCellPad, kCellPad); },
-            })
-        ));
+      if (launcherPosition == DockLauncherPosition::Start) {
+        instance.row->addChild(createLauncherButton(instance, cfg, renderer, clickContext));
       }
 
-      if (cfg.showDots) {
-        const float dot = std::max(kDotMinSize, std::round(iSize * kDotSizeRatio));
-        const bool verticalDots = shell::dock::isVerticalEdge(edge);
+      instance.items.reserve(itemModels.size());
+      for (std::size_t itemIndex = 0; itemIndex < itemModels.size(); ++itemIndex) {
+        const auto& model = itemModels[itemIndex];
+        auto& item = instance.items.emplace_back();
+        item.idLower = model.idLower;
+        item.slotProgress = 1.0F;
+        item.exiting = false;
 
-        for (auto& dotIndicator : item.dotIndicators) {
-          dotIndicator = static_cast<Box*>(areaNode->addChild(
-              ui::box({
-                  .fill = colorSpecFromRole(ColorRole::Secondary),
-                  .radius = dot * 0.5F,
-                  .width = dot,
-                  .height = dot,
-                  .visible = false,
-                  .configure = [verticalDots, edge, cellMain, dot](Box& box) {
-                    if (verticalDots) {
-                      const float x = edge == DockEdge::Left ? 1.0F : std::round(cellMain - dot - 1.0F);
-                      box.setPosition(x, std::round((cellMain - dot) * 0.5F));
-                    } else {
-                      const float y = edge == DockEdge::Bottom ? std::round(cellMain - dot - 1.0F) : 1.0F;
-                      box.setPosition(std::round((cellMain - dot) * 0.5F), y);
-                    }
-                  },
-              })
-          ));
+        const bool itemPinned = itemIndex < pinnedCount;
+        auto areaNode = createDockItemNode(instance, cfg, renderer, deps, model, item, clickContext, itemPinned);
+        item.area = static_cast<InputArea*>(instance.row->addChild(std::move(areaNode)));
+
+        const float iconScale = model.active ? cfg.activeScale : cfg.inactiveScale;
+        if (cfg.magnification) {
+          Node* iconNode =
+              item.iconImage != nullptr ? static_cast<Node*>(item.iconImage) : static_cast<Node*>(item.iconGlyph);
+          if (iconNode != nullptr) {
+            item.visualScale = iconScale;
+            item.hoverMainOffset = 0.0F;
+            const float badgeSize = std::max(kBadgeMinSize, iSize * kBadgeSizeRatio);
+            applyHoverItemVisual(iconNode, item.badge, edge, kCellPad, kCellPad, iSize, badgeSize, iconScale);
+          }
         }
       }
 
-      if (cfg.showInstanceCount) {
-        const float bd = std::max(kBadgeMinSize, iSize * kBadgeSizeRatio);
+      if (launcherPosition == DockLauncherPosition::End) {
+        instance.row->addChild(createLauncherButton(instance, cfg, renderer, clickContext));
+      }
 
-        areaNode->addChild(
-            ui::box({
-                .out = &item.badge,
-                .radius = bd * 0.5F,
-                .width = bd,
-                .height = bd,
-                .visible = false,
-                .configure = [edge, iSize, bd](Box& box) {
-                  applyBadgeVisual(&box, edge, kCellPad, kCellPad, iSize, bd, 1.0F);
-                },
-            })
-        );
-
-        item.badge->addChild(
-            ui::label({
-                .out = &item.badgeLabel,
-                .fontSize = bd * kBadgeFontRatio,
-                .fontWeight = FontWeight::Bold,
-                .maxLines = 1,
-                .visible = false,
-            })
+      if (cfg.magnification && instance.launcherIconNode != nullptr) {
+        const float launcherScale = cfg.inactiveScale;
+        instance.launcherVisualScale = launcherScale;
+        applyHoverItemVisual(
+            instance.launcherIconNode, nullptr, edge, kCellPad, launcherIconBaseY(cfg, iSize), iSize, 0.0F,
+            launcherScale
         );
       }
-
-      auto* instPtr = &instance;
-
-      configureDockTooltip(*areaNode, cfg, dockItemTooltipText(model.entry));
-      areaNode->setAcceptedButtons(InputArea::buttonMask({BTN_LEFT, BTN_RIGHT}));
-      const bool itemPinned = itemIndex < pinnedCount;
-      areaNode->setOnPress([instPtr, clickContext, itemIndex, itemPinned](const InputArea::PointerData& d) {
-        if (d.button != BTN_LEFT) {
-          return;
+    } else {
+      // Incremental reconciliation with animated exit and entrance
+      // 1. Mark and animate exiting items
+      for (auto& item : instance.items) {
+        if (item.exiting) {
+          continue;
         }
-        auto& drag = instPtr->drag;
-        const auto& dockCfg = instPtr->config;
-        if (d.pressed) {
-          if (!itemPinned) {
-            return;
+        const bool presentInSnapshot =
+            std::any_of(itemModels.begin(), itemModels.end(), [&](const auto& m) { return m.idLower == item.idLower; });
+        if (!presentInSnapshot) {
+          item.exiting = true;
+          if (item.area != nullptr) {
+            item.area->setAcceptedButtons(0);
           }
-          resetDockItemDragState(*instPtr);
-          drag.pinned = true;
-          drag.sourceIndex = itemIndex;
-          drag.startMain = pointerMainOnRow(dockCfg, instPtr->items[itemIndex].area, d.localX, d.localY);
-          drag.currentMain = drag.startMain;
-          drag.targetIndex = itemIndex;
-          drag.holdTimer.start(kDragHoldDelay, [instPtr, itemIndex]() {
-            if (instPtr->drag.sourceIndex == itemIndex && !instPtr->drag.active) {
-              instPtr->drag.armed = true;
-              dismissDockTooltipImpl();
-            }
-          });
-          return;
-        }
-
-        if (drag.sourceIndex != itemIndex) {
-          return;
-        }
-
-        if (drag.active) {
-          if (clickContext->callbacks.endDrag) {
-            clickContext->callbacks.endDrag(*instPtr, true);
+          if (item.slotAnimId != 0) {
+            instance.animations.cancel(item.slotAnimId);
+            item.slotAnimId = 0;
           }
-          return;
-        }
+          const float startProgress = item.slotProgress;
+          const float startScale = item.visualScale > 0.0F ? item.visualScale : 1.0F;
+          const float startOpacity = item.visualOpacity > 0.0F ? item.visualOpacity : 1.0F;
+          const std::string idLower = item.idLower;
+          Node* iconNode =
+              item.iconImage != nullptr ? static_cast<Node*>(item.iconImage) : static_cast<Node*>(item.iconGlyph);
 
-        drag.holdTimer.stop();
-        if (drag.armed) {
-          if (clickContext->callbacks.endDrag) {
-            clickContext->callbacks.endDrag(*instPtr, false);
-          }
-        } else {
-          resetDockItemDragState(*instPtr);
-        }
-      });
-      areaNode->setOnMotion([instPtr, clickContext, itemIndex, itemPinned](const InputArea::PointerData& d) {
-        if (!itemPinned || instPtr->drag.sourceIndex != itemIndex) {
-          return;
-        }
-        if (!instPtr->drag.armed && !instPtr->drag.active) {
-          return;
-        }
-
-        const auto& dockCfg = instPtr->config;
-        const float mainPos = pointerMainOnRow(dockCfg, instPtr->items[itemIndex].area, d.localX, d.localY);
-        instPtr->drag.currentMain = mainPos;
-        if (instPtr->drag.active) {
-          if (clickContext->callbacks.updateDrag) {
-            clickContext->callbacks.updateDrag(*instPtr, mainPos);
-          }
-        } else if (instPtr->drag.armed && clickContext->callbacks.beginDrag) {
-          clickContext->callbacks.beginDrag(*instPtr, itemIndex, mainPos);
-        }
-      });
-      areaNode->setOnClick([action = std::move(action), instPtr, clickContext](const InputArea::PointerData& d) {
-        if (d.button == BTN_RIGHT) {
-          if (clickContext->callbacks.openItemMenu) {
-            clickContext->callbacks.openItemMenu(*instPtr, action);
-          }
-          return;
-        }
-        if (d.button != BTN_LEFT) {
-          return;
-        }
-        if (instPtr->suppressItemClick) {
-          instPtr->suppressItemClick = false;
-          return;
-        }
-        if (instPtr->drag.active || instPtr->drag.armed) {
-          return;
-        }
-        handleItemClick(*instPtr, action, *clickContext);
-      });
-
-      item.area = static_cast<InputArea*>(instance.row->addChild(std::move(areaNode)));
-      const float iconScale = model.active ? cfg.activeScale : cfg.inactiveScale;
-      if (cfg.magnification) {
-        Node* iconNode =
-            item.iconImage != nullptr ? static_cast<Node*>(item.iconImage) : static_cast<Node*>(item.iconGlyph);
-        if (iconNode != nullptr) {
-          item.visualScale = iconScale;
-          item.hoverMainOffset = 0.0F;
-          const float badgeSize = std::max(kBadgeMinSize, iSize * kBadgeSizeRatio);
-          applyHoverItemVisual(iconNode, item.badge, edge, kCellPad, kCellPad, iSize, badgeSize, iconScale);
+          item.slotAnimId = instance.animations.animate(
+              0.0F, 1.0F, Style::animNormal, Easing::EaseOutCubic,
+              [&instance, idLower, iconNode, startProgress, startScale, startOpacity, cellMain, cellCross,
+               vert](float t) {
+                auto* itm = findDockItemById(instance, idLower);
+                if (itm == nullptr || itm->area == nullptr) {
+                  return;
+                }
+                const float p = std::lerp(startProgress, 0.0F, t);
+                itm->slotProgress = p;
+                const float mainSize = cellMain * p;
+                if (!vert) {
+                  itm->area->setSize(mainSize, cellCross);
+                } else {
+                  itm->area->setSize(cellCross, mainSize);
+                }
+                if (iconNode != nullptr) {
+                  iconNode->setScale(p * startScale);
+                  iconNode->setOpacity(p * startOpacity);
+                }
+                if (instance.row != nullptr && instance.surface != nullptr) {
+                  Renderer& r = instance.surface->renderTarget().renderer();
+                  instance.row->layout(r);
+                  shell::dock::syncDockItemRestPositions(instance, instance.config);
+                  instance.surface->requestRedraw();
+                }
+              },
+              [&instance, idLower]() {
+                auto it = std::find_if(instance.items.begin(), instance.items.end(), [&](const auto& i) {
+                  return i.idLower == idLower;
+                });
+                if (it != instance.items.end()) {
+                  if (it->slotAnimId != 0) {
+                    it->slotAnimId = 0;
+                  }
+                  if (instance.row != nullptr && it->area != nullptr) {
+                    instance.row->removeChild(it->area);
+                  }
+                  instance.items.erase(it);
+                }
+                if (instance.row != nullptr && instance.surface != nullptr) {
+                  Renderer& r = instance.surface->renderTarget().renderer();
+                  instance.row->layout(r);
+                  shell::dock::syncDockItemRestPositions(instance, instance.config);
+                  instance.surface->requestRedraw();
+                }
+              },
+              item.area
+          );
         }
       }
-    }
 
-    if (launcherPosition == DockLauncherPosition::End) {
-      instance.row->addChild(createLauncherButton(instance, cfg, renderer, clickContext));
-    }
+      // 2. Add or restore entering items
+      for (std::size_t modelIndex = 0; modelIndex < itemModels.size(); ++modelIndex) {
+        const auto& model = itemModels[modelIndex];
+        auto* existing = findDockItemById(instance, model.idLower);
+        if (existing != nullptr && existing->exiting) {
+          if (existing->slotAnimId != 0) {
+            instance.animations.cancel(existing->slotAnimId);
+            existing->slotAnimId = 0;
+          }
+          existing->exiting = false;
+          if (existing->area != nullptr) {
+            existing->area->setAcceptedButtons(InputArea::buttonMask({BTN_LEFT, BTN_RIGHT}));
+          }
+          const float startProgress = existing->slotProgress;
+          const float targetScale = model.active ? cfg.activeScale : cfg.inactiveScale;
+          const float targetOpacity = model.active ? cfg.activeOpacity : cfg.inactiveOpacity;
+          const std::string idLower = existing->idLower;
+          Node* iconNode = existing->iconImage != nullptr ? static_cast<Node*>(existing->iconImage)
+                                                          : static_cast<Node*>(existing->iconGlyph);
 
-    if (cfg.magnification && instance.launcherIconNode != nullptr) {
-      const float launcherScale = cfg.inactiveScale;
-      instance.launcherVisualScale = launcherScale;
-      applyHoverItemVisual(
-          instance.launcherIconNode, nullptr, edge, kCellPad, launcherIconBaseY(cfg, iSize), iSize, 0.0F, launcherScale
-      );
+          existing->slotAnimId = instance.animations.animate(
+              0.0F, 1.0F, Style::animNormal, Easing::EaseOutCubic,
+              [&instance, idLower, iconNode, startProgress, targetScale, targetOpacity, cellMain, cellCross,
+               vert](float t) {
+                auto* itm = findDockItemById(instance, idLower);
+                if (itm == nullptr || itm->area == nullptr) {
+                  return;
+                }
+                const float p = std::lerp(startProgress, 1.0F, t);
+                itm->slotProgress = p;
+                const float mainSize = cellMain * p;
+                if (!vert) {
+                  itm->area->setSize(mainSize, cellCross);
+                } else {
+                  itm->area->setSize(cellCross, mainSize);
+                }
+                if (iconNode != nullptr) {
+                  iconNode->setScale(p * targetScale);
+                  iconNode->setOpacity(p * targetOpacity);
+                }
+                if (instance.row != nullptr && instance.surface != nullptr) {
+                  Renderer& r = instance.surface->renderTarget().renderer();
+                  instance.row->layout(r);
+                  shell::dock::syncDockItemRestPositions(instance, instance.config);
+                  instance.surface->requestRedraw();
+                }
+              },
+              [&instance, idLower, targetScale, targetOpacity, cellMain, cellCross, vert]() {
+                auto* itm = findDockItemById(instance, idLower);
+                if (itm != nullptr) {
+                  itm->slotAnimId = 0;
+                  itm->slotProgress = 1.0F;
+                  itm->visualScale = targetScale;
+                  itm->visualOpacity = targetOpacity;
+                  if (!vert) {
+                    itm->area->setSize(cellMain, cellCross);
+                  } else {
+                    itm->area->setSize(cellCross, cellMain);
+                  }
+                  Node* node = itm->iconImage != nullptr ? static_cast<Node*>(itm->iconImage)
+                                                         : static_cast<Node*>(itm->iconGlyph);
+                  if (node != nullptr) {
+                    node->setScale(targetScale);
+                    node->setOpacity(targetOpacity);
+                  }
+                }
+                if (instance.row != nullptr && instance.surface != nullptr) {
+                  Renderer& r = instance.surface->renderTarget().renderer();
+                  instance.row->layout(r);
+                  shell::dock::syncDockItemRestPositions(instance, instance.config);
+                  instance.surface->requestRedraw();
+                }
+              },
+              existing->area
+          );
+        } else if (existing == nullptr) {
+          const bool itemPinned = modelIndex < pinnedCount;
+          auto& item = instance.items.emplace_back();
+          item.idLower = model.idLower;
+          item.slotProgress = 0.0F;
+          item.exiting = false;
+          item.visualScale = 0.0F;
+          item.visualOpacity = 0.0F;
+
+          auto areaNode = createDockItemNode(instance, cfg, renderer, deps, model, item, clickContext, itemPinned);
+          if (!vert) {
+            areaNode->setSize(0.0F, cellCross);
+          } else {
+            areaNode->setSize(cellCross, 0.0F);
+          }
+          Node* iconNode =
+              item.iconImage != nullptr ? static_cast<Node*>(item.iconImage) : static_cast<Node*>(item.iconGlyph);
+          if (iconNode != nullptr) {
+            iconNode->setScale(0.0F);
+            iconNode->setOpacity(0.0F);
+          }
+
+          const std::size_t insertChildIdx =
+              (launcherPosition == DockLauncherPosition::Start) ? 1 + modelIndex : modelIndex;
+          item.area = static_cast<InputArea*>(instance.row->insertChildAt(insertChildIdx, std::move(areaNode)));
+
+          const float targetScale = model.active ? cfg.activeScale : cfg.inactiveScale;
+          const float targetOpacity = model.active ? cfg.activeOpacity : cfg.inactiveOpacity;
+          const std::string idLower = item.idLower;
+
+          item.slotAnimId = instance.animations.animate(
+              0.0F, 1.0F, Style::animNormal, Easing::EaseOutCubic,
+              [&instance, idLower, iconNode, targetScale, targetOpacity, cellMain, cellCross, vert](float t) {
+                auto* itm = findDockItemById(instance, idLower);
+                if (itm == nullptr || itm->area == nullptr) {
+                  return;
+                }
+                itm->slotProgress = t;
+                const float mainSize = cellMain * t;
+                if (!vert) {
+                  itm->area->setSize(mainSize, cellCross);
+                } else {
+                  itm->area->setSize(cellCross, mainSize);
+                }
+                if (iconNode != nullptr) {
+                  iconNode->setScale(t * targetScale);
+                  iconNode->setOpacity(t * targetOpacity);
+                }
+                if (instance.row != nullptr && instance.surface != nullptr) {
+                  Renderer& r = instance.surface->renderTarget().renderer();
+                  instance.row->layout(r);
+                  shell::dock::syncDockItemRestPositions(instance, instance.config);
+                  instance.surface->requestRedraw();
+                }
+              },
+              [&instance, idLower, targetScale, targetOpacity, cellMain, cellCross, vert]() {
+                auto* itm = findDockItemById(instance, idLower);
+                if (itm != nullptr) {
+                  itm->slotAnimId = 0;
+                  itm->slotProgress = 1.0F;
+                  itm->visualScale = targetScale;
+                  itm->visualOpacity = targetOpacity;
+                  if (!vert) {
+                    itm->area->setSize(cellMain, cellCross);
+                  } else {
+                    itm->area->setSize(cellCross, cellMain);
+                  }
+                  Node* node = itm->iconImage != nullptr ? static_cast<Node*>(itm->iconImage)
+                                                         : static_cast<Node*>(itm->iconGlyph);
+                  if (node != nullptr) {
+                    node->setScale(targetScale);
+                    node->setOpacity(targetOpacity);
+                  }
+                }
+                if (instance.row != nullptr && instance.surface != nullptr) {
+                  Renderer& r = instance.surface->renderTarget().renderer();
+                  instance.row->layout(r);
+                  shell::dock::syncDockItemRestPositions(instance, instance.config);
+                  instance.surface->requestRedraw();
+                }
+              },
+              item.area
+          );
+        }
+      }
     }
 
     shell::dock::resizeSurface(instance, cfg, deps.model.config.config().shell.shadow);
@@ -782,11 +1128,19 @@ namespace shell::dock {
     const auto& cfg = instance.config;
     const auto& shell = deps.model.config.config().shell;
     const DockEdge edge = cfg.position;
-    const std::size_t itemCount = std::min(instance.items.size(), snapshot.items.size());
 
-    for (std::size_t itemIndex = 0; itemIndex < itemCount; ++itemIndex) {
+    for (std::size_t itemIndex = 0; itemIndex < instance.items.size(); ++itemIndex) {
       auto& item = instance.items[itemIndex];
-      const auto& model = snapshot.items[itemIndex];
+      if (item.exiting) {
+        continue;
+      }
+      const auto modelIt = std::find_if(snapshot.items.begin(), snapshot.items.end(), [&](const auto& m) {
+        return m.idLower == item.idLower;
+      });
+      if (modelIt == snapshot.items.end()) {
+        continue;
+      }
+      const auto& model = *modelIt;
       const bool dragActive = instance.drag.active;
       const bool isDraggedItem = dragActive && itemIndex == instance.drag.sourceIndex;
       const float iconScale = model.active ? cfg.activeScale : cfg.inactiveScale;
@@ -876,8 +1230,75 @@ namespace shell::dock {
 
       if (item.badge != nullptr && item.badgeLabel != nullptr) {
         const bool show = count >= 2;
-        item.badge->setVisible(show);
-        item.badgeLabel->setVisible(show);
+        if (show != item.badgeVisible) {
+          item.badgeVisible = show;
+          if (item.badgeAnimId != 0) {
+            instance.animations.cancel(item.badgeAnimId);
+            item.badgeAnimId = 0;
+          }
+          const std::string idLower = item.idLower;
+          if (show) {
+            item.badge->setVisible(true);
+            item.badgeLabel->setVisible(true);
+            item.badgeScale = 0.0F;
+            item.badge->setScale(0.0F);
+            item.badgeAnimId = instance.animations.animate(
+                0.0F, 1.0F, 180.0F, Easing::EaseOutBack,
+                [&instance, idLower](float s) {
+                  auto* itm = findDockItemById(instance, idLower);
+                  if (itm == nullptr || itm->badge == nullptr) {
+                    return;
+                  }
+                  itm->badgeScale = s;
+                  itm->badge->setScale(s);
+                  if (instance.surface != nullptr) {
+                    instance.surface->requestRedraw();
+                  }
+                },
+                [&instance, idLower]() {
+                  auto* itm = findDockItemById(instance, idLower);
+                  if (itm != nullptr) {
+                    itm->badgeAnimId = 0;
+                    itm->badgeScale = 1.0F;
+                    if (itm->badge != nullptr) {
+                      itm->badge->setScale(1.0F);
+                    }
+                  }
+                },
+                item.badge
+            );
+          } else {
+            const float startScale = item.badgeScale > 0.0F ? item.badgeScale : 1.0F;
+            item.badgeAnimId = instance.animations.animate(
+                startScale, 0.0F, 120.0F, Easing::EaseInQuad,
+                [&instance, idLower](float s) {
+                  auto* itm = findDockItemById(instance, idLower);
+                  if (itm == nullptr || itm->badge == nullptr) {
+                    return;
+                  }
+                  itm->badgeScale = s;
+                  itm->badge->setScale(s);
+                  if (instance.surface != nullptr) {
+                    instance.surface->requestRedraw();
+                  }
+                },
+                [&instance, idLower]() {
+                  auto* itm = findDockItemById(instance, idLower);
+                  if (itm != nullptr) {
+                    itm->badgeAnimId = 0;
+                    itm->badgeScale = 0.0F;
+                    if (itm->badge != nullptr) {
+                      itm->badge->setVisible(false);
+                    }
+                    if (itm->badgeLabel != nullptr) {
+                      itm->badgeLabel->setVisible(false);
+                    }
+                  }
+                },
+                item.badge
+            );
+          }
+        }
         if (show) {
           const std::string label = (count > 9) ? "9+" : std::to_string(count);
           item.badgeLabel->setText(label);
@@ -1204,7 +1625,15 @@ namespace shell::dock {
         Node* iconNode =
             item.iconImage != nullptr ? static_cast<Node*>(item.iconImage) : static_cast<Node*>(item.iconGlyph);
         if (iconNode != nullptr) {
+          iconNode->setScale(1.05F);
           iconNode->setOpacity(0.85F);
+        }
+        item.dragMainOffset = extraOffset;
+        const float totalMain = item.restMainPos + item.hoverMainOffset + extraOffset;
+        if (!vertical) {
+          item.area->setPosition(totalMain, item.restCrossPos);
+        } else {
+          item.area->setPosition(item.restCrossPos, totalMain);
         }
       } else if (i < pinnedCount) {
         item.area->setZIndex(0);
@@ -1220,6 +1649,40 @@ namespace shell::dock {
         if (iconNode != nullptr) {
           iconNode->setOpacity(item.visualOpacity >= 0.0F ? item.visualOpacity : 1.0F);
         }
+        if (std::abs(item.dragTargetOffset - extraOffset) > 0.1F) {
+          item.dragTargetOffset = extraOffset;
+          if (item.dragAnimId != 0) {
+            instance.animations.cancel(item.dragAnimId);
+          }
+          const float startOffset = item.dragMainOffset;
+          const std::string idLower = item.idLower;
+          item.dragAnimId = instance.animations.animate(
+              startOffset, extraOffset, 160.0F, Easing::EaseOutCubic,
+              [&instance, idLower, vertical](float val) {
+                auto* itm = findDockItemById(instance, idLower);
+                if (itm == nullptr || itm->area == nullptr) {
+                  return;
+                }
+                itm->dragMainOffset = val;
+                const float totalMain = itm->restMainPos + itm->hoverMainOffset + val;
+                if (!vertical) {
+                  itm->area->setPosition(totalMain, itm->restCrossPos);
+                } else {
+                  itm->area->setPosition(itm->restCrossPos, totalMain);
+                }
+                if (instance.surface != nullptr) {
+                  instance.surface->requestRedraw();
+                }
+              },
+              [&instance, idLower]() {
+                auto* itm = findDockItemById(instance, idLower);
+                if (itm != nullptr) {
+                  itm->dragAnimId = 0;
+                }
+              },
+              item.area
+          );
+        }
       } else {
         item.area->setZIndex(0);
         Node* iconNode =
@@ -1227,14 +1690,6 @@ namespace shell::dock {
         if (iconNode != nullptr) {
           iconNode->setOpacity(item.visualOpacity >= 0.0F ? item.visualOpacity : 1.0F);
         }
-      }
-
-      item.dragMainOffset = extraOffset;
-      const float totalMain = item.restMainPos + item.hoverMainOffset + extraOffset;
-      if (!vertical) {
-        item.area->setPosition(totalMain, item.restCrossPos);
-      } else {
-        item.area->setPosition(item.restCrossPos, totalMain);
       }
     }
   }
@@ -1245,6 +1700,11 @@ namespace shell::dock {
       if (item.area == nullptr) {
         continue;
       }
+      if (item.dragAnimId != 0) {
+        instance.animations.cancel(item.dragAnimId);
+        item.dragAnimId = 0;
+      }
+      item.dragTargetOffset = 0.0F;
       item.dragMainOffset = 0.0F;
       item.isDragGhost = false;
       item.area->setZIndex(0);
@@ -1259,6 +1719,8 @@ namespace shell::dock {
       if (iconNode != nullptr) {
         const float opacity = item.visualOpacity >= 0.0F ? item.visualOpacity : 1.0F;
         iconNode->setOpacity(opacity);
+        const float scale = item.visualScale >= 0.0F ? item.visualScale : 1.0F;
+        iconNode->setScale(scale);
       }
     }
   }

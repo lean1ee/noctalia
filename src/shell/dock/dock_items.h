@@ -26,6 +26,7 @@ namespace shell::dock {
   struct DockSnapshot;
 
   struct DockItemView {
+    std::string idLower;
     InputArea* area = nullptr;
     std::array<Box*, 3> dotIndicators{};
     Box* badge = nullptr;
@@ -36,11 +37,20 @@ namespace shell::dock {
     float restCrossPos = 0.0F;
     float hoverMainOffset = 0.0F;
     float dragMainOffset = 0.0F; // additional offset applied while dragging this item
-    bool isDragGhost = false;    // drawn at reduced opacity as the placeholder slot
+    float dragTargetOffset = 0.0F;
+    AnimationManager::Id dragAnimId = 0;
+    bool isDragGhost = false; // drawn at reduced opacity as the placeholder slot
     float visualScale = -1.0F;
     float visualOpacity = -1.0F;
     AnimationManager::Id scaleAnimId = 0;
     AnimationManager::Id opacityAnimId = 0;
+    bool exiting = false;
+    float slotProgress = 1.0F;
+    AnimationManager::Id slotAnimId = 0;
+    AnimationManager::Id tapAnimId = 0;
+    AnimationManager::Id badgeAnimId = 0;
+    float badgeScale = 0.0F;
+    bool badgeVisible = false;
   };
 
   struct DockItemAction {
@@ -86,6 +96,7 @@ namespace shell::dock {
   void applyDragVisuals(DockInstance& instance, const DockConfig& cfg);
   void clearDragVisuals(DockInstance& instance, const DockConfig& cfg);
   void dismissDockTooltip();
+  void triggerDockItemTapPulse(DockInstance& instance, std::size_t itemIndex);
   [[nodiscard]] std::size_t computeDragTargetIndex(const DockInstance& instance, const DockConfig& cfg, float mainPos);
 
 } // namespace shell::dock
