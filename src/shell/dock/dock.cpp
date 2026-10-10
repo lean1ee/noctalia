@@ -18,6 +18,7 @@
 #include "system/desktop_entry_launch.h"
 #include "ui/app_icon_colorization.h"
 #include "ui/style.h"
+#include "util/string_utils.h"
 #include "wayland/layer_surface.h"
 #include "wayland/surface.h"
 #include "wayland/wayland_toplevels.h"
@@ -349,6 +350,87 @@ namespace {
 
 } // namespace
 
+void Dock::onAppLaunched(const DesktopEntry& entry) {
+  if (entry.id.empty() && entry.name.empty()) {
+    return;
+  }
+  std::string idLower = StringUtils::toLower(entry.id);
+  DesktopEntry resolvedEntry = entry;
+  if (resolvedEntry.name.empty() || resolvedEntry.icon.empty()) {
+    for (const auto& de : desktopEntries()) {
+      if (StringUtils::toLower(de.id) == idLower) {
+        resolvedEntry = de;
+        break;
+      }
+    }
+  }
+  if (idLower.empty()) {
+    idLower = StringUtils::toLower(resolvedEntry.id);
+  }
+  if (idLower.empty()) {
+    return;
+  }
+
+  pruneLaunchingApps();
+
+  auto it = std::find_if(m_launchingApps.begin(), m_launchingApps.end(), [&](const auto& app) {
+    return app.idLower == idLower;
+  });
+  if (it == m_launchingApps.end()) {
+    m_launchingApps.push_back(
+        LaunchingApp{
+            .entry = resolvedEntry,
+            .idLower = idLower,
+            .launchTime = std::chrono::steady_clock::now(),
+        }
+    );
+  } else {
+    it->launchTime = std::chrono::steady_clock::now();
+  }
+
+  for (auto& instPtr : m_instances) {
+    if (instPtr != nullptr) {
+      shell::dock::startDockItemLaunchBreathing(*instPtr, idLower);
+    }
+  }
+
+  m_launchPruneTimer.start(std::chrono::milliseconds(10500), [this]() {
+    pruneLaunchingApps();
+    refresh();
+  });
+
+  refresh();
+}
+
+void Dock::pruneLaunchingApps() {
+  const auto now = std::chrono::steady_clock::now();
+  std::vector<std::string> toStop;
+
+  std::erase_if(m_launchingApps, [&](const auto& app) {
+    const bool expired = (now - app.launchTime > std::chrono::seconds(10));
+    bool hasWindows = false;
+    if (m_platform != nullptr) {
+      auto windows = shell::dock::windowsForDockItem(*m_platform, app.idLower, app.idLower, nullptr);
+      hasWindows = !windows.empty();
+    }
+    if (expired || hasWindows) {
+      if (expired) {
+        toStop.push_back(app.idLower);
+      }
+      return true;
+    }
+    return false;
+  });
+
+  for (const auto& idLower : toStop) {
+    for (auto& instPtr : m_instances) {
+      if (instPtr != nullptr) {
+        shell::dock::stopDockItemLaunchBreathing(*instPtr, idLower);
+      }
+    }
+  }
+}
+
 // ── Lifecycle ─────────────────────────────────────────────────────────────────
 
 Dock::Dock() = default;
@@ -358,6 +440,9 @@ bool Dock::initialize(CompositorPlatform& platform, ConfigService* config, Rende
   m_platform = &platform;
   m_config = config;
   m_renderContext = renderContext;
+
+  m_appLaunchConn =
+      desktop_entry_launch::appLaunchSignal().connect([this](const DesktopEntry& entry) { onAppLaunched(entry); });
 
   const auto& cfg = m_config->config().dock;
   m_config->addReloadCallback(
@@ -976,12 +1061,20 @@ bool Dock::syncInstanceModel(shell::dock::DockInstance& instance) {
       instance.config, instance.lastPinnedConfig, instance.pinnedEntries, instance.modelSerial, instance.entriesVersion
   );
 
+  pruneLaunchingApps();
+  std::vector<DesktopEntry> launchingEntries;
+  launchingEntries.reserve(m_launchingApps.size());
+  for (const auto& app : m_launchingApps) {
+    launchingEntries.push_back(app.entry);
+  }
+
   auto next = shell::dock::buildDockSnapshot({
       .platform = *m_platform,
       .config = instance.config,
       .output = instance.output,
       .globalActiveIdLower = activeIdLower,
       .pinnedEntries = instance.pinnedEntries,
+      .launchingEntries = launchingEntries,
       .sourceSerial = instance.modelSerial,
   });
 
@@ -1030,6 +1123,20 @@ void Dock::rebuildItems(shell::dock::DockInstance& instance) {
           .endDrag = [this](shell::dock::DockInstance& inst, bool commit) { endDrag(inst, commit); },
       }
   );
+
+  for (std::size_t i = 0; i < instance.items.size(); ++i) {
+    auto& item = instance.items[i];
+    const bool isLaunchingApp = std::any_of(m_launchingApps.begin(), m_launchingApps.end(), [&](const auto& app) {
+      return app.idLower == item.idLower;
+    });
+    if (isLaunchingApp && !item.isLaunching) {
+      if (i < instance.snapshot.items.size()
+          && !instance.snapshot.items[i].running
+          && instance.snapshot.items[i].instanceCount == 0) {
+        shell::dock::startDockItemLaunchBreathing(instance, item.idLower);
+      }
+    }
+  }
 }
 
 // ── Private: visual update ────────────────────────────────────────────────────
@@ -1049,6 +1156,20 @@ void Dock::updateVisuals(shell::dock::DockInstance& instance) {
       },
       instance.snapshot
   );
+
+  for (std::size_t i = 0; i < instance.items.size(); ++i) {
+    auto& item = instance.items[i];
+    const bool isLaunchingApp = std::any_of(m_launchingApps.begin(), m_launchingApps.end(), [&](const auto& app) {
+      return app.idLower == item.idLower;
+    });
+    if (isLaunchingApp && !item.isLaunching) {
+      if (i < instance.snapshot.items.size()
+          && !instance.snapshot.items[i].running
+          && instance.snapshot.items[i].instanceCount == 0) {
+        shell::dock::startDockItemLaunchBreathing(instance, item.idLower);
+      }
+    }
+  }
 }
 
 void Dock::updateHoverZoomPointer(shell::dock::DockInstance& instance, float sceneX, float sceneY) {

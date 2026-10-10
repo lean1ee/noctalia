@@ -105,7 +105,6 @@ namespace shell::dock {
   void clearDragVisuals(DockInstance& instance, const DockConfig& cfg);
   void dismissDockTooltip();
   void triggerDockItemTapPulse(DockInstance& instance, std::size_t itemIndex);
-  void triggerLauncherTapPulse(DockInstance& instance);
   void startDockItemLaunchBreathing(DockInstance& instance, std::string_view idLower);
   void stopDockItemLaunchBreathing(DockInstance& instance, std::string_view idLower);
   [[nodiscard]] std::size_t computeDragTargetIndex(const DockInstance& instance, const DockConfig& cfg, float mainPos);

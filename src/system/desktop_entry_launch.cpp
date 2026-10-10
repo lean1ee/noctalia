@@ -285,6 +285,11 @@ namespace {
 
 namespace desktop_entry_launch {
 
+  Signal<const DesktopEntry&>& appLaunchSignal() {
+    static Signal<const DesktopEntry&> signal;
+    return signal;
+  }
+
   std::optional<PreparedCommand> prepareCommand(std::string_view exec, bool terminal, const PrepareOptions& options) {
     const std::string decodedExec = decodeDesktopStringValue(exec);
     const std::string cleanExec = stripFieldCodes(decodedExec);
@@ -353,6 +358,7 @@ namespace desktop_entry_launch {
     resolved.desktopActionId.clear();
 
     if (tryDbusActivation(resolved)) {
+      appLaunchSignal().emit(entry);
       return true;
     }
 
@@ -373,7 +379,11 @@ namespace desktop_entry_launch {
     }
 
     const std::string appName = !entry.id.empty() ? entry.id : appNameOrDefault(entry.name);
-    return launchPrepared(prepared->args, appName, entry.workingDir, resolved, runAsSystemdService);
+    const bool ok = launchPrepared(prepared->args, appName, entry.workingDir, resolved, runAsSystemdService);
+    if (ok) {
+      appLaunchSignal().emit(entry);
+    }
+    return ok;
   }
 
   bool launchAction(

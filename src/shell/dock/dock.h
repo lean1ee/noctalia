@@ -1,6 +1,7 @@
 #pragma once
 
 #include "config/config_types.h"
+#include "core/timer_manager.h"
 #include "system/desktop_entry.h"
 #include "system/icon_resolver.h"
 #include "ui/signal.h"
@@ -73,6 +74,8 @@ private:
   void updateDrag(shell::dock::DockInstance& instance, float mainPos);
   void endDrag(shell::dock::DockInstance& instance, bool commit);
   void reevaluateSmartAutoHide();
+  void onAppLaunched(const DesktopEntry& entry);
+  void pruneLaunchingApps();
 
   CompositorPlatform* m_platform = nullptr;
   ConfigService* m_config = nullptr;
@@ -98,6 +101,15 @@ private:
   shell::dock::DockInstance* m_hoveredInstance = nullptr;
   shell::dock::DockInstance* m_popupOwnerInstance = nullptr; // instance that owns the current open popup
   std::unique_ptr<shell::dock::DockPopup> m_itemMenu;        // right-click context menu
+  struct LaunchingApp {
+    DesktopEntry entry;
+    std::string idLower;
+    std::chrono::steady_clock::time_point launchTime;
+  };
+
+  std::vector<LaunchingApp> m_launchingApps;
+  Signal<const DesktopEntry&>::ScopedConnection m_appLaunchConn;
+  Timer m_launchPruneTimer;
   Signal<>::ScopedConnection m_appIconColorizeConn;
   bool m_overlayDisplaySuppressed = false;
   bool m_hadInstancesBeforeOverlaySuppress = false;

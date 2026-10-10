@@ -40,6 +40,7 @@ namespace shell::dock {
     wl_output* output = nullptr;
     const std::string& globalActiveIdLower;
     const std::vector<DesktopEntry>& pinnedEntries;
+    std::vector<DesktopEntry> launchingEntries{};
     std::uint64_t sourceSerial = 0;
   };
 

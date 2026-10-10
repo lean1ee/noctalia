@@ -1,5 +1,7 @@
 #pragma once
 
+#include "ui/signal.h"
+
 #include <optional>
 #include <string>
 #include <string_view>
@@ -35,6 +37,8 @@ namespace desktop_entry_launch {
   prepareCommand(std::string_view exec, bool terminal, const PrepareOptions& options = {});
 
   // Launches the configured MIME handler without passing a file or URI.
+  [[nodiscard]] Signal<const DesktopEntry&>& appLaunchSignal();
+
   [[nodiscard]] bool launchDefaultForMimeType(std::string_view mimeType);
 
   [[nodiscard]] bool launchEntry(const DesktopEntry& entry, const LaunchOptions& options = {});

@@ -482,56 +482,6 @@ namespace shell::dock {
     );
   }
 
-  void triggerLauncherTapPulse(DockInstance& instance) {
-    if (instance.launcherIconNode == nullptr) {
-      return;
-    }
-    if (instance.launcherTapAnimId != 0) {
-      instance.animations.cancel(instance.launcherTapAnimId);
-      instance.launcherTapAnimId = 0;
-    }
-
-    const float baseScale =
-        instance.launcherVisualScale > 0.0F ? instance.launcherVisualScale : instance.config.inactiveScale;
-    const float tapDownScale = baseScale * 0.92F;
-
-    instance.launcherTapAnimId = instance.animations.animate(
-        baseScale, tapDownScale, 60.0F, Easing::EaseOutCubic,
-        [&instance](float s) {
-          if (instance.launcherIconNode != nullptr) {
-            instance.launcherIconNode->setScale(s);
-          }
-          if (instance.surface != nullptr) {
-            instance.surface->requestRedraw();
-          }
-        },
-        [&instance, tapDownScale, baseScale]() {
-          if (instance.launcherIconNode == nullptr) {
-            return;
-          }
-          instance.launcherTapAnimId = instance.animations.animate(
-              tapDownScale, baseScale, 90.0F, Easing::EaseOutBack,
-              [&instance](float s) {
-                if (instance.launcherIconNode != nullptr) {
-                  instance.launcherIconNode->setScale(s);
-                }
-                if (instance.surface != nullptr) {
-                  instance.surface->requestRedraw();
-                }
-              },
-              [&instance, baseScale]() {
-                instance.launcherTapAnimId = 0;
-                if (instance.launcherIconNode != nullptr) {
-                  instance.launcherIconNode->setScale(baseScale);
-                }
-              },
-              instance.launcherIconNode
-          );
-        },
-        instance.launcherIconNode
-    );
-  }
-
   void stopDockItemLaunchBreathing(DockInstance& instance, std::string_view idLower);
 
   void stepDockItemLaunchPulse(DockInstance& instance, const std::string& idLower, bool expand) {
@@ -705,11 +655,8 @@ namespace shell::dock {
     configureDockTooltip(*areaNode, cfg, i18n::tr("dock.launcher"));
     areaNode->setAcceptedButtons(InputArea::buttonMask({BTN_LEFT}));
     areaNode->setOnClick([instPtr, clickContext](const InputArea::PointerData& d) {
-      if (d.button == BTN_LEFT) {
-        triggerLauncherTapPulse(*instPtr);
-        if (clickContext->callbacks.toggleLauncher) {
-          clickContext->callbacks.toggleLauncher(*instPtr);
-        }
+      if (d.button == BTN_LEFT && clickContext->callbacks.toggleLauncher) {
+        clickContext->callbacks.toggleLauncher(*instPtr);
       }
     });
 
@@ -1010,10 +957,6 @@ namespace shell::dock {
       if (instance.launcherScaleAnimId != 0) {
         instance.animations.cancel(instance.launcherScaleAnimId);
         instance.launcherScaleAnimId = 0;
-      }
-      if (instance.launcherTapAnimId != 0) {
-        instance.animations.cancel(instance.launcherTapAnimId);
-        instance.launcherTapAnimId = 0;
       }
 
       auto freshRow = makeDockItemRow(cfg, vert);
@@ -1777,7 +1720,7 @@ namespace shell::dock {
               .restCenterMain = itemRestCenterMain(instance.launcherRestMainPos, cellMain),
               .iconBaseX = kCellPad,
               .iconBaseY = launcherIconBaseY(cfg, iSize),
-              .isPulsing = (instance.launcherTapAnimId != 0),
+              .isPulsing = false,
           }
       );
     }
@@ -1816,7 +1759,7 @@ namespace shell::dock {
               .restCenterMain = itemRestCenterMain(instance.launcherRestMainPos, cellMain),
               .iconBaseX = kCellPad,
               .iconBaseY = launcherIconBaseY(cfg, iSize),
-              .isPulsing = (instance.launcherTapAnimId != 0),
+              .isPulsing = false,
           }
       );
     }
