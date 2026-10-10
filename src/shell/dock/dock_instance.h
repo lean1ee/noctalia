@@ -3,6 +3,7 @@
 #include "config/config_types.h"
 #include "core/timer_manager.h"
 #include "render/scene/input_dispatcher.h"
+#include "shell/dock/dock_geometry.h"
 #include "shell/dock/dock_items.h"
 #include "shell/dock/dock_model.h"
 #include "ui/signal.h"
@@ -52,6 +53,10 @@ namespace shell::dock {
     Box* panel = nullptr;
     InputArea* viewport = nullptr;
     Flex* row = nullptr;
+    DockPanelGeometry currentPanelGeometry;
+    DockPanelGeometry targetPanelGeometry;
+    bool hasInitialGeometry = false;
+    AnimationManager::Id resizeAnimId = 0;
     float scrollOffset = 0.0F;
     float maxScrollOffset = 0.0F;
     InputDispatcher inputDispatcher;
@@ -108,7 +113,9 @@ namespace shell::dock {
   void resizeSurface(DockInstance& instance, const DockConfig& cfg, const ShellConfig::ShadowConfig& shadowConfig);
   void applyPanelPalette(DockInstance& instance, const DockConfig& cfg);
   void syncDockSlideLayerTransform(DockInstance& instance, const DockConfig& cfg);
-  void applyDockCompositorBlur(DockInstance& instance, const DockConfig& cfg);
+  void applyDockCompositorBlur(
+      DockInstance& instance, const DockConfig& cfg, const DockPanelGeometry* overrideGeo = nullptr
+  );
   void startHideFadeOut(DockInstance& instance);
   void revealAutoHideDock(DockInstance& instance);
 

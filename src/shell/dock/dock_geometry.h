@@ -3,6 +3,7 @@
 #include "config/config_types.h"
 #include "render/core/render_styles.h"
 
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <utility>
@@ -18,6 +19,13 @@ namespace shell::dock {
     float panelY = 0.0F;
     float panelW = 0.0F;
     float panelH = 0.0F;
+
+    [[nodiscard]] bool operator==(const DockPanelGeometry& other) const noexcept {
+      return std::abs(panelX - other.panelX) < 0.5F
+          && std::abs(panelY - other.panelY) < 0.5F
+          && std::abs(panelW - other.panelW) < 0.5F
+          && std::abs(panelH - other.panelH) < 0.5F;
+    }
   };
 
   struct DockSurfaceGeometry {

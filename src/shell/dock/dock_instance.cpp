@@ -173,7 +173,7 @@ namespace shell::dock {
     );
   }
 
-  void applyDockCompositorBlur(DockInstance& instance, const DockConfig& cfg) {
+  void applyDockCompositorBlur(DockInstance& instance, const DockConfig& cfg, const DockPanelGeometry* overrideGeo) {
     if (instance.surface == nullptr) {
       return;
     }
@@ -184,22 +184,33 @@ namespace shell::dock {
       instance.surface->clearBlurRegion();
       return;
     }
-    if (instance.panel == nullptr) {
+    if (instance.panel == nullptr && overrideGeo == nullptr) {
       return;
     }
     const auto concave = dockConcaveShape(cfg);
-    float absX = 0.0F;
-    float absY = 0.0F;
-    Node::absolutePosition(instance.panel, absX, absY);
+    int px = 0;
+    int py = 0;
+    int pw = 0;
+    int ph = 0;
+    if (overrideGeo != nullptr) {
+      px = static_cast<int>(std::lround(overrideGeo->panelX));
+      py = static_cast<int>(std::lround(overrideGeo->panelY));
+      pw = static_cast<int>(std::lround(overrideGeo->panelW));
+      ph = static_cast<int>(std::lround(overrideGeo->panelH));
+    } else {
+      float absX = 0.0F;
+      float absY = 0.0F;
+      Node::absolutePosition(instance.panel, absX, absY);
 
-    const float insetL = concave.logicalInset.left;
-    const float insetT = concave.logicalInset.top;
-    const float insetR = concave.logicalInset.right;
-    const float insetB = concave.logicalInset.bottom;
-    const int px = static_cast<int>(std::lround(absX + insetL));
-    const int py = static_cast<int>(std::lround(absY + insetT));
-    const int pw = static_cast<int>(std::lround(instance.panel->width() - insetL - insetR));
-    const int ph = static_cast<int>(std::lround(instance.panel->height() - insetT - insetB));
+      const float insetL = concave.logicalInset.left;
+      const float insetT = concave.logicalInset.top;
+      const float insetR = concave.logicalInset.right;
+      const float insetB = concave.logicalInset.bottom;
+      px = static_cast<int>(std::lround(absX + insetL));
+      py = static_cast<int>(std::lround(absY + insetT));
+      pw = static_cast<int>(std::lround(instance.panel->width() - insetL - insetR));
+      ph = static_cast<int>(std::lround(instance.panel->height() - insetT - insetB));
+    }
     auto blurStrips = Surface::tessellateShape(px, py, pw, ph, concave.corners, concave.logicalInset, concave.radii);
     instance.surface->setBlurRegion(blurStrips);
   }
@@ -324,7 +335,8 @@ namespace shell::dock {
     }
 
     const auto totalItemCount = instance.items.size() + shell::dock::dockLauncherButtonCount(cfg);
-    const auto panelGeometry = shell::dock::computePanelGeometry(cfg, shadowConfig, w, h, totalItemCount);
+    const auto targetPanelGeometry = shell::dock::computePanelGeometry(cfg, shadowConfig, w, h, totalItemCount);
+    const auto contentLength = static_cast<float>(shell::dock::dockContentSize(cfg, totalItemCount));
 
     // Update root size on reconfigure.
     instance.sceneRoot->setSize(w, h);
@@ -332,11 +344,8 @@ namespace shell::dock {
       instance.slideRoot->setSize(w, h);
     }
 
-    // Shadow follows the same shape as the background
+    // Shadow style
     if (instance.shadow != nullptr) {
-      const auto shadowOff = shadowDirectionOffset(shadowConfig.direction);
-      const auto shadowOffsetX = static_cast<float>(shadowOff.x);
-      const auto shadowOffsetY = static_cast<float>(shadowOff.y);
       const RoundedRectStyle shadowStyle = shell::surface_shadow::style(
           shadowConfig, cfg.backgroundOpacity,
           shell::surface_shadow::Shape{
@@ -345,50 +354,119 @@ namespace shell::dock {
       );
       instance.shadow->setStyle(shadowStyle);
       instance.shadow->setZIndex(-1);
-      instance.shadow->setPosition(
-          panelGeometry.panelX - concave.logicalInset.left + shadowOffsetX,
-          panelGeometry.panelY - concave.logicalInset.top + shadowOffsetY
-      );
-      instance.shadow->setSize(
-          panelGeometry.panelW + concave.logicalInset.left + concave.logicalInset.right,
-          panelGeometry.panelH + concave.logicalInset.top + concave.logicalInset.bottom
-      );
     }
 
     // Panel
     applyPanelPalette(instance, cfg);
-    instance.panel->setPosition(
-        panelGeometry.panelX - concave.logicalInset.left, panelGeometry.panelY - concave.logicalInset.top
-    );
-    instance.panel->setSize(
-        panelGeometry.panelW + concave.logicalInset.left + concave.logicalInset.right,
-        panelGeometry.panelH + concave.logicalInset.top + concave.logicalInset.bottom
-    );
 
-    // The viewport follows the visible pill on its main axis and spans the surface on its cross axis,
-    // allowing magnified icons to grow away from the screen edge without escaping past the pill ends.
-    const auto contentLength = static_cast<float>(
-        shell::dock::dockContentSize(cfg, instance.items.size() + shell::dock::dockLauncherButtonCount(cfg))
-    );
-    if (vert) {
-      instance.viewport->setPosition(0.0F, panelGeometry.panelY);
-      instance.viewport->setSize(w, panelGeometry.panelH);
-      instance.row->setPosition(panelGeometry.panelX, 0.0F);
-      instance.row->setSize(panelGeometry.panelW, contentLength);
-      instance.maxScrollOffset = std::max(0.0F, contentLength - panelGeometry.panelH);
-    } else {
-      instance.viewport->setPosition(panelGeometry.panelX, 0.0F);
-      instance.viewport->setSize(panelGeometry.panelW, h);
-      instance.row->setPosition(0.0F, panelGeometry.panelY);
-      instance.row->setSize(contentLength, panelGeometry.panelH);
-      instance.maxScrollOffset = std::max(0.0F, contentLength - panelGeometry.panelW);
+    auto applyLayout = [&instance, &concave, &shadowConfig, vert, w, h, contentLength](const DockPanelGeometry& geo) {
+      if (instance.shadow != nullptr) {
+        const auto shadowOff = shadowDirectionOffset(shadowConfig.direction);
+        instance.shadow->setPosition(
+            geo.panelX - concave.logicalInset.left + static_cast<float>(shadowOff.x),
+            geo.panelY - concave.logicalInset.top + static_cast<float>(shadowOff.y)
+        );
+        instance.shadow->setSize(
+            geo.panelW + concave.logicalInset.left + concave.logicalInset.right,
+            geo.panelH + concave.logicalInset.top + concave.logicalInset.bottom
+        );
+      }
+
+      if (instance.panel != nullptr) {
+        instance.panel->setPosition(geo.panelX - concave.logicalInset.left, geo.panelY - concave.logicalInset.top);
+        instance.panel->setSize(
+            geo.panelW + concave.logicalInset.left + concave.logicalInset.right,
+            geo.panelH + concave.logicalInset.top + concave.logicalInset.bottom
+        );
+      }
+
+      if (instance.viewport != nullptr && instance.row != nullptr) {
+        if (vert) {
+          instance.viewport->setPosition(0.0F, geo.panelY);
+          instance.viewport->setSize(w, geo.panelH);
+          instance.row->setPosition(geo.panelX, 0.0F);
+          instance.row->setSize(geo.panelW, contentLength);
+          instance.maxScrollOffset = std::max(0.0F, contentLength - geo.panelH);
+        } else {
+          instance.viewport->setPosition(geo.panelX, 0.0F);
+          instance.viewport->setSize(geo.panelW, h);
+          instance.row->setPosition(0.0F, geo.panelY);
+          instance.row->setSize(contentLength, geo.panelH);
+          instance.maxScrollOffset = std::max(0.0F, contentLength - geo.panelW);
+        }
+      }
+    };
+
+    if (instance.row != nullptr) {
+      applyDockScrollOffset(instance, cfg);
+      instance.row->layout(renderer);
+      shell::dock::syncDockItemRestPositions(instance, cfg);
     }
-    applyDockScrollOffset(instance, cfg);
-    instance.row->layout(renderer);
-    shell::dock::syncDockItemRestPositions(instance, cfg);
+
+    const bool targetChanged = !instance.hasInitialGeometry || (instance.targetPanelGeometry != targetPanelGeometry);
+
+    if (!instance.hasInitialGeometry) {
+      if (instance.resizeAnimId != 0) {
+        instance.animations.cancel(instance.resizeAnimId);
+        instance.resizeAnimId = 0;
+      }
+      instance.currentPanelGeometry = targetPanelGeometry;
+      instance.targetPanelGeometry = targetPanelGeometry;
+      instance.hasInitialGeometry = true;
+      applyLayout(targetPanelGeometry);
+      applyDockCompositorBlur(instance, cfg);
+      syncDockAutoHideInputRegion(instance, cfg, targetPanelGeometry);
+    } else if (targetChanged) {
+      if (instance.resizeAnimId != 0) {
+        instance.animations.cancel(instance.resizeAnimId);
+        instance.resizeAnimId = 0;
+      }
+      const auto startGeo = instance.currentPanelGeometry;
+      const auto endGeo = targetPanelGeometry;
+      instance.targetPanelGeometry = targetPanelGeometry;
+
+      // On expand: pre-expand compositor blur once so the capsule animates over the blurred backdrop
+      // without per-frame Wayland IPC or compositor texture recreation across any GPU (AMD, Intel, NVIDIA).
+      const bool isExpanding = vert ? (endGeo.panelH >= startGeo.panelH) : (endGeo.panelW >= startGeo.panelW);
+      if (isExpanding) {
+        applyDockCompositorBlur(instance, cfg, &endGeo);
+      }
+
+      instance.resizeAnimId = instance.animations.animate(
+          0.0F, 1.0F, Style::animNormal, Easing::EaseOutCubic,
+          [&instance, startGeo, endGeo, applyLayout](float t) {
+            instance.currentPanelGeometry.panelX = std::lerp(startGeo.panelX, endGeo.panelX, t);
+            instance.currentPanelGeometry.panelY = std::lerp(startGeo.panelY, endGeo.panelY, t);
+            instance.currentPanelGeometry.panelW = std::lerp(startGeo.panelW, endGeo.panelW, t);
+            instance.currentPanelGeometry.panelH = std::lerp(startGeo.panelH, endGeo.panelH, t);
+
+            applyLayout(instance.currentPanelGeometry);
+            if (instance.surface != nullptr) {
+              instance.surface->requestRedraw();
+            }
+          },
+          [&instance, endGeo, applyLayout]() {
+            instance.currentPanelGeometry = endGeo;
+            instance.resizeAnimId = 0;
+            applyLayout(endGeo);
+            applyDockCompositorBlur(instance, instance.config, &endGeo);
+            syncDockAutoHideInputRegion(instance, instance.config, endGeo);
+            if (instance.surface != nullptr) {
+              instance.surface->requestRedraw();
+            }
+          },
+          instance.panel
+      );
+    } else {
+      if (instance.resizeAnimId != 0) {
+        applyLayout(instance.currentPanelGeometry);
+      } else {
+        applyLayout(targetPanelGeometry);
+      }
+    }
 
     if (dockUsesAnyAutoHide(cfg)) {
-      const auto hiddenDelta = shell::dock::computeHiddenSlideDelta(cfg, shadowConfig, w, h, panelGeometry);
+      const auto hiddenDelta = shell::dock::computeHiddenSlideDelta(cfg, shadowConfig, w, h, targetPanelGeometry);
       instance.slideHiddenDx = hiddenDelta.first;
       instance.slideHiddenDy = hiddenDelta.second;
     } else {
@@ -396,9 +474,6 @@ namespace shell::dock {
       instance.slideHiddenDy = 0.0F;
     }
     syncDockSlideLayerTransform(instance, cfg);
-    syncDockAutoHideInputRegion(instance, cfg, panelGeometry);
-
-    applyDockCompositorBlur(instance, cfg);
 
     // Palette reactivity.
     instance.paletteConn = paletteChanged().connect([inst = &instance] {
