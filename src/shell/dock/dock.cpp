@@ -1218,6 +1218,11 @@ void Dock::tryFulfillPendingLaunchFocus() {
 
   PendingLaunchFocus pending = *m_pendingLaunchFocus;
   if (std::chrono::steady_clock::now() > pending.deadline) {
+    for (auto& instPtr : m_instances) {
+      if (instPtr != nullptr) {
+        shell::dock::stopDockItemLaunchBreathing(*instPtr, pending.idLower);
+      }
+    }
     m_pendingLaunchFocus.reset();
     return;
   }
@@ -1246,6 +1251,11 @@ void Dock::tryFulfillPendingLaunchFocus() {
   }
 
   m_pendingLaunchFocus.reset();
+  for (auto& instPtr : m_instances) {
+    if (instPtr != nullptr) {
+      shell::dock::stopDockItemLaunchBreathing(*instPtr, pending.idLower);
+    }
+  }
   m_platform->activateToplevelInfo(*window);
 }
 
@@ -1265,9 +1275,14 @@ void Dock::activateOrLaunchItem(shell::dock::DockInstance& instance, const shell
         .wmClassLower = action.windowLookupWmClassLower,
         .outputFilter = shell::dock::dockFilterOutput(instance.config, instance.output),
         .targetOutput = instance.output,
-        .deadline = std::chrono::steady_clock::now() + std::chrono::seconds(8),
+        .deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10),
     };
     m_platform->prepareAppLaunchOnOutput(instance.output);
+    for (auto& instPtr : m_instances) {
+      if (instPtr != nullptr) {
+        shell::dock::startDockItemLaunchBreathing(*instPtr, action.idLower);
+      }
+    }
     (void)desktop_entry_launch::launchEntry(action.entry, dockLaunchOptions(*m_platform, *m_config, action.entry));
     return;
   }

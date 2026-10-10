@@ -29,6 +29,11 @@ namespace shell::dock {
     std::string idLower;
     InputArea* area = nullptr;
     std::array<Box*, 3> dotIndicators{};
+    std::array<float, 3> dotScales{0.0F, 0.0F, 0.0F};
+    std::array<bool, 3> dotVisible{false, false, false};
+    std::array<AnimationManager::Id, 3> dotAnimIds{0, 0, 0};
+    bool wasActive = false;
+    AnimationManager::Id activeDotPulseAnimId = 0;
     Box* badge = nullptr;
     Label* badgeLabel = nullptr;
     Image* iconImage = nullptr;
@@ -51,6 +56,9 @@ namespace shell::dock {
     AnimationManager::Id badgeAnimId = 0;
     float badgeScale = 0.0F;
     bool badgeVisible = false;
+    bool isLaunching = false;
+    AnimationManager::Id launchAnimId = 0;
+    std::uint64_t launchElapsedMs = 0;
   };
 
   struct DockItemAction {
@@ -97,6 +105,9 @@ namespace shell::dock {
   void clearDragVisuals(DockInstance& instance, const DockConfig& cfg);
   void dismissDockTooltip();
   void triggerDockItemTapPulse(DockInstance& instance, std::size_t itemIndex);
+  void triggerLauncherTapPulse(DockInstance& instance);
+  void startDockItemLaunchBreathing(DockInstance& instance, std::string_view idLower);
+  void stopDockItemLaunchBreathing(DockInstance& instance, std::string_view idLower);
   [[nodiscard]] std::size_t computeDragTargetIndex(const DockInstance& instance, const DockConfig& cfg, float mainPos);
 
 } // namespace shell::dock

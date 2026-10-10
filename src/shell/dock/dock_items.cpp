@@ -80,11 +80,15 @@ namespace {
                                            : kCellPad;
   }
 
-  void applyHoverIconVisual(Node* iconNode, DockEdge edge, float baseX, float baseY, float iconSize, float scale) {
+  void applyHoverIconVisual(
+      Node* iconNode, DockEdge edge, float baseX, float baseY, float iconSize, float scale, bool skipScale = false
+  ) {
     if (iconNode == nullptr) {
       return;
     }
-    iconNode->setScale(scale);
+    if (!skipScale) {
+      iconNode->setScale(scale);
+    }
     const float shift = scale > 1.0F ? iconSize * (1.0F - scale) * 0.5F : 0.0F;
     float x = baseX;
     float y = baseY;
@@ -119,9 +123,9 @@ namespace {
 
   void applyHoverItemVisual(
       Node* iconNode, Box* badge, DockEdge edge, float iconBaseX, float iconBaseY, float iconSize, float badgeSize,
-      float scale
+      float scale, bool skipScale = false
   ) {
-    applyHoverIconVisual(iconNode, edge, iconBaseX, iconBaseY, iconSize, scale);
+    applyHoverIconVisual(iconNode, edge, iconBaseX, iconBaseY, iconSize, scale, skipScale);
     applyBadgeVisual(badge, edge, iconBaseX, iconBaseY, iconSize, badgeSize, scale);
   }
 
@@ -345,7 +349,7 @@ namespace {
   [[nodiscard]] bool applyHoverIconScale(
       Node* iconNode, float& visualScale, AnimationManager::Id& animId, shell::dock::DockInstance& instance,
       float targetScale, float restScale, float lerpFactor, DockEdge edge, float baseX, float baseY, float iconSize,
-      Box* badge, float badgeSize
+      Box* badge, float badgeSize, bool isPulsing = false
   ) {
     if (iconNode == nullptr) {
       return false;
@@ -356,18 +360,18 @@ namespace {
     }
     if (visualScale < 0.0F) {
       visualScale = restScale;
-      applyHoverItemVisual(iconNode, badge, edge, baseX, baseY, iconSize, badgeSize, restScale);
+      applyHoverItemVisual(iconNode, badge, edge, baseX, baseY, iconSize, badgeSize, restScale, isPulsing);
     }
     if (std::abs(visualScale - targetScale) <= 0.002F) {
       if (std::abs(visualScale - targetScale) > 0.0F) {
         visualScale = targetScale;
-        applyHoverItemVisual(iconNode, badge, edge, baseX, baseY, iconSize, badgeSize, targetScale);
+        applyHoverItemVisual(iconNode, badge, edge, baseX, baseY, iconSize, badgeSize, targetScale, isPulsing);
       }
       return false;
     }
     const float next = visualScale + (targetScale - visualScale) * lerpFactor;
     visualScale = next;
-    applyHoverItemVisual(iconNode, badge, edge, baseX, baseY, iconSize, badgeSize, next);
+    applyHoverItemVisual(iconNode, badge, edge, baseX, baseY, iconSize, badgeSize, next, isPulsing);
     return true;
   }
 
@@ -478,6 +482,165 @@ namespace shell::dock {
     );
   }
 
+  void triggerLauncherTapPulse(DockInstance& instance) {
+    if (instance.launcherIconNode == nullptr) {
+      return;
+    }
+    if (instance.launcherTapAnimId != 0) {
+      instance.animations.cancel(instance.launcherTapAnimId);
+      instance.launcherTapAnimId = 0;
+    }
+
+    const float baseScale =
+        instance.launcherVisualScale > 0.0F ? instance.launcherVisualScale : instance.config.inactiveScale;
+    const float tapDownScale = baseScale * 0.92F;
+
+    instance.launcherTapAnimId = instance.animations.animate(
+        baseScale, tapDownScale, 60.0F, Easing::EaseOutCubic,
+        [&instance](float s) {
+          if (instance.launcherIconNode != nullptr) {
+            instance.launcherIconNode->setScale(s);
+          }
+          if (instance.surface != nullptr) {
+            instance.surface->requestRedraw();
+          }
+        },
+        [&instance, tapDownScale, baseScale]() {
+          if (instance.launcherIconNode == nullptr) {
+            return;
+          }
+          instance.launcherTapAnimId = instance.animations.animate(
+              tapDownScale, baseScale, 90.0F, Easing::EaseOutBack,
+              [&instance](float s) {
+                if (instance.launcherIconNode != nullptr) {
+                  instance.launcherIconNode->setScale(s);
+                }
+                if (instance.surface != nullptr) {
+                  instance.surface->requestRedraw();
+                }
+              },
+              [&instance, baseScale]() {
+                instance.launcherTapAnimId = 0;
+                if (instance.launcherIconNode != nullptr) {
+                  instance.launcherIconNode->setScale(baseScale);
+                }
+              },
+              instance.launcherIconNode
+          );
+        },
+        instance.launcherIconNode
+    );
+  }
+
+  void stopDockItemLaunchBreathing(DockInstance& instance, std::string_view idLower);
+
+  void stepDockItemLaunchPulse(DockInstance& instance, const std::string& idLower, bool expand) {
+    auto* item = findDockItemById(instance, idLower);
+    if (item == nullptr || !item->isLaunching) {
+      return;
+    }
+    Node* iconNode =
+        item->iconImage != nullptr ? static_cast<Node*>(item->iconImage) : static_cast<Node*>(item->iconGlyph);
+    if (iconNode == nullptr) {
+      item->isLaunching = false;
+      return;
+    }
+
+    // Safety timeout: 10 seconds (10000ms)
+    if (item->launchElapsedMs >= 10000) {
+      stopDockItemLaunchBreathing(instance, idLower);
+      return;
+    }
+    item->launchElapsedMs += 700;
+
+    const float baseScale = item->visualScale > 0.0F ? item->visualScale : 1.0F;
+    const float fromScale = expand ? baseScale * 0.95F : baseScale * 1.05F;
+    const float toScale = expand ? baseScale * 1.05F : baseScale * 0.95F;
+
+    item->launchAnimId = instance.animations.animate(
+        fromScale, toScale, 700.0F, Easing::EaseInOutQuad,
+        [&instance, idLower](float s) {
+          auto* cur = findDockItemById(instance, idLower);
+          if (cur == nullptr || !cur->isLaunching) {
+            return;
+          }
+          Node* n = cur->iconImage != nullptr ? static_cast<Node*>(cur->iconImage) : static_cast<Node*>(cur->iconGlyph);
+          if (n != nullptr) {
+            n->setScale(s);
+          }
+          if (instance.surface != nullptr) {
+            instance.surface->requestRedraw();
+          }
+        },
+        [&instance, idLower, expand]() { stepDockItemLaunchPulse(instance, idLower, !expand); }, iconNode
+    );
+  }
+
+  void startDockItemLaunchBreathing(DockInstance& instance, std::string_view idLower) {
+    auto* item = findDockItemById(instance, idLower);
+    if (item == nullptr || item->isLaunching) {
+      return;
+    }
+    item->isLaunching = true;
+    item->launchElapsedMs = 0;
+    if (item->launchAnimId != 0) {
+      instance.animations.cancel(item->launchAnimId);
+      item->launchAnimId = 0;
+    }
+    stepDockItemLaunchPulse(instance, std::string(idLower), true);
+  }
+
+  void stopDockItemLaunchBreathing(DockInstance& instance, std::string_view idLower) {
+    auto* item = findDockItemById(instance, idLower);
+    if (item == nullptr || !item->isLaunching) {
+      return;
+    }
+    item->isLaunching = false;
+    item->launchElapsedMs = 0;
+    if (item->launchAnimId != 0) {
+      instance.animations.cancel(item->launchAnimId);
+      item->launchAnimId = 0;
+    }
+
+    Node* iconNode =
+        item->iconImage != nullptr ? static_cast<Node*>(item->iconImage) : static_cast<Node*>(item->iconGlyph);
+    if (iconNode == nullptr) {
+      return;
+    }
+
+    const float targetScale = item->visualScale > 0.0F ? item->visualScale : 1.0F;
+    const std::string id(idLower);
+
+    item->launchAnimId = instance.animations.animate(
+        iconNode->scaleX(), targetScale, 150.0F, Easing::EaseOutCubic,
+        [&instance, id](float s) {
+          auto* cur = findDockItemById(instance, id);
+          if (cur == nullptr) {
+            return;
+          }
+          Node* n = cur->iconImage != nullptr ? static_cast<Node*>(cur->iconImage) : static_cast<Node*>(cur->iconGlyph);
+          if (n != nullptr) {
+            n->setScale(s);
+          }
+          if (instance.surface != nullptr) {
+            instance.surface->requestRedraw();
+          }
+        },
+        [&instance, id, targetScale]() {
+          auto* cur = findDockItemById(instance, id);
+          if (cur != nullptr) {
+            cur->launchAnimId = 0;
+            Node* n =
+                cur->iconImage != nullptr ? static_cast<Node*>(cur->iconImage) : static_cast<Node*>(cur->iconGlyph);
+            if (n != nullptr) {
+              n->setScale(targetScale);
+            }
+          }
+        },
+        iconNode
+    );
+  }
+
   void handleItemClick(DockInstance& instance, const DockItemAction& action, DockItemClickContext& context);
 
   std::unique_ptr<InputArea> createLauncherButton(
@@ -542,8 +705,11 @@ namespace shell::dock {
     configureDockTooltip(*areaNode, cfg, i18n::tr("dock.launcher"));
     areaNode->setAcceptedButtons(InputArea::buttonMask({BTN_LEFT}));
     areaNode->setOnClick([instPtr, clickContext](const InputArea::PointerData& d) {
-      if (d.button == BTN_LEFT && clickContext->callbacks.toggleLauncher) {
-        clickContext->callbacks.toggleLauncher(*instPtr);
+      if (d.button == BTN_LEFT) {
+        triggerLauncherTapPulse(*instPtr);
+        if (clickContext->callbacks.toggleLauncher) {
+          clickContext->callbacks.toggleLauncher(*instPtr);
+        }
       }
     });
 
@@ -622,6 +788,7 @@ namespace shell::dock {
                 .height = dot,
                 .visible = false,
                 .configure = [verticalDots, edge, cellMain, dot](Box& box) {
+                  box.setTransformOrigin(dot * 0.5F, dot * 0.5F);
                   if (verticalDots) {
                     const float x = edge == DockEdge::Left ? 1.0F : std::round(cellMain - dot - 1.0F);
                     box.setPosition(x, std::round((cellMain - dot) * 0.5F));
@@ -816,6 +983,26 @@ namespace shell::dock {
         instance.row->parent()->removeChild(instance.row);
         instance.row = nullptr;
       }
+      for (auto& item : instance.items) {
+        if (item.scaleAnimId != 0)
+          instance.animations.cancel(item.scaleAnimId);
+        if (item.opacityAnimId != 0)
+          instance.animations.cancel(item.opacityAnimId);
+        if (item.slotAnimId != 0)
+          instance.animations.cancel(item.slotAnimId);
+        if (item.tapAnimId != 0)
+          instance.animations.cancel(item.tapAnimId);
+        if (item.badgeAnimId != 0)
+          instance.animations.cancel(item.badgeAnimId);
+        if (item.launchAnimId != 0)
+          instance.animations.cancel(item.launchAnimId);
+        if (item.activeDotPulseAnimId != 0)
+          instance.animations.cancel(item.activeDotPulseAnimId);
+        for (auto& dotAnimId : item.dotAnimIds) {
+          if (dotAnimId != 0)
+            instance.animations.cancel(dotAnimId);
+        }
+      }
       instance.items.clear();
       instance.launcherArea = nullptr;
       instance.launcherIconNode = nullptr;
@@ -823,6 +1010,10 @@ namespace shell::dock {
       if (instance.launcherScaleAnimId != 0) {
         instance.animations.cancel(instance.launcherScaleAnimId);
         instance.launcherScaleAnimId = 0;
+      }
+      if (instance.launcherTapAnimId != 0) {
+        instance.animations.cancel(instance.launcherTapAnimId);
+        instance.launcherTapAnimId = 0;
       }
 
       auto freshRow = makeDockItemRow(cfg, vert);
@@ -931,6 +1122,18 @@ namespace shell::dock {
                 if (it != instance.items.end()) {
                   if (it->slotAnimId != 0) {
                     it->slotAnimId = 0;
+                  }
+                  if (it->tapAnimId != 0)
+                    instance.animations.cancel(it->tapAnimId);
+                  if (it->badgeAnimId != 0)
+                    instance.animations.cancel(it->badgeAnimId);
+                  if (it->launchAnimId != 0)
+                    instance.animations.cancel(it->launchAnimId);
+                  if (it->activeDotPulseAnimId != 0)
+                    instance.animations.cancel(it->activeDotPulseAnimId);
+                  for (auto& dotAnimId : it->dotAnimIds) {
+                    if (dotAnimId != 0)
+                      instance.animations.cancel(dotAnimId);
                   }
                   if (instance.row != nullptr && it->area != nullptr) {
                     instance.row->removeChild(it->area);
@@ -1197,6 +1400,10 @@ namespace shell::dock {
 
       const std::size_t count = model.instanceCount;
 
+      if (item.isLaunching && (model.running || model.instanceCount > 0)) {
+        stopDockItemLaunchBreathing(instance, item.idLower);
+      }
+
       if (cfg.showDots) {
         const std::size_t dotCount = std::min<std::size_t>(count, 3);
         const auto iSize = static_cast<float>(cfg.iconSize);
@@ -1206,16 +1413,18 @@ namespace shell::dock {
             dotCount == 0 ? dot : dot * static_cast<float>(dotCount) + kDotGap * static_cast<float>(dotCount - 1);
         const float groupStart = std::round((cellMain - groupLength) * 0.5F);
         const bool verticalDots = shell::dock::isVerticalEdge(edge);
+        const std::string idLower = item.idLower;
 
         for (std::size_t dotIndex = 0; dotIndex < item.dotIndicators.size(); ++dotIndex) {
           if (item.dotIndicators[dotIndex] == nullptr) {
             continue;
           }
           Box* dotNode = item.dotIndicators[dotIndex];
-          const bool visible = dotIndex < dotCount;
-          dotNode->setVisible(visible);
+          const bool wantsVisible = dotIndex < dotCount;
+
           dotNode->setFill(colorSpecFromRole(model.active ? ColorRole::Primary : ColorRole::Secondary));
-          if (visible) {
+
+          if (wantsVisible) {
             const float main = groupStart + static_cast<float>(dotIndex) * (dot + kDotGap);
             if (verticalDots) {
               const float x = edge == DockEdge::Left ? 1.0F : std::round(cellMain - dot - 1.0F);
@@ -1225,7 +1434,129 @@ namespace shell::dock {
               dotNode->setPosition(main, y);
             }
           }
+
+          if (wantsVisible != item.dotVisible[dotIndex]) {
+            item.dotVisible[dotIndex] = wantsVisible;
+            if (item.dotAnimIds[dotIndex] != 0) {
+              instance.animations.cancel(item.dotAnimIds[dotIndex]);
+              item.dotAnimIds[dotIndex] = 0;
+            }
+
+            if (wantsVisible) {
+              dotNode->setVisible(true);
+              const float startScale = item.dotScales[dotIndex] > 0.0F ? item.dotScales[dotIndex] : 0.0F;
+              item.dotScales[dotIndex] = startScale;
+              dotNode->setScale(startScale);
+              item.dotAnimIds[dotIndex] = instance.animations.animate(
+                  startScale, 1.0F, 140.0F, Easing::EaseOutBack,
+                  [&instance, idLower, dotIndex](float s) {
+                    auto* itm = findDockItemById(instance, idLower);
+                    if (itm == nullptr || itm->dotIndicators[dotIndex] == nullptr) {
+                      return;
+                    }
+                    itm->dotScales[dotIndex] = s;
+                    itm->dotIndicators[dotIndex]->setScale(s);
+                    if (instance.surface != nullptr) {
+                      instance.surface->requestRedraw();
+                    }
+                  },
+                  [&instance, idLower, dotIndex]() {
+                    auto* itm = findDockItemById(instance, idLower);
+                    if (itm == nullptr) {
+                      return;
+                    }
+                    itm->dotAnimIds[dotIndex] = 0;
+                    itm->dotScales[dotIndex] = 1.0F;
+                    if (itm->dotIndicators[dotIndex] != nullptr) {
+                      itm->dotIndicators[dotIndex]->setScale(1.0F);
+                    }
+                  },
+                  dotNode
+              );
+            } else {
+              const float startScale = item.dotScales[dotIndex] > 0.0F ? item.dotScales[dotIndex] : 1.0F;
+              item.dotAnimIds[dotIndex] = instance.animations.animate(
+                  startScale, 0.0F, 100.0F, Easing::EaseInQuad,
+                  [&instance, idLower, dotIndex](float s) {
+                    auto* itm = findDockItemById(instance, idLower);
+                    if (itm == nullptr || itm->dotIndicators[dotIndex] == nullptr) {
+                      return;
+                    }
+                    itm->dotScales[dotIndex] = s;
+                    itm->dotIndicators[dotIndex]->setScale(s);
+                    if (instance.surface != nullptr) {
+                      instance.surface->requestRedraw();
+                    }
+                  },
+                  [&instance, idLower, dotIndex]() {
+                    auto* itm = findDockItemById(instance, idLower);
+                    if (itm == nullptr) {
+                      return;
+                    }
+                    itm->dotAnimIds[dotIndex] = 0;
+                    itm->dotScales[dotIndex] = 0.0F;
+                    if (itm->dotIndicators[dotIndex] != nullptr) {
+                      itm->dotIndicators[dotIndex]->setVisible(false);
+                      itm->dotIndicators[dotIndex]->setScale(0.0F);
+                    }
+                  },
+                  dotNode
+              );
+            }
+          }
         }
+
+        // Active indicator pulse on focus transition
+        if (model.active && !item.wasActive && dotCount > 0 && item.dotIndicators[0] != nullptr) {
+          if (item.activeDotPulseAnimId != 0) {
+            instance.animations.cancel(item.activeDotPulseAnimId);
+            item.activeDotPulseAnimId = 0;
+          }
+          item.activeDotPulseAnimId = instance.animations.animate(
+              1.0F, 1.35F, 110.0F, Easing::EaseOutCubic,
+              [&instance, idLower](float s) {
+                auto* itm = findDockItemById(instance, idLower);
+                if (itm == nullptr || itm->dotIndicators[0] == nullptr || !itm->dotVisible[0]) {
+                  return;
+                }
+                itm->dotIndicators[0]->setScale(s);
+                if (instance.surface != nullptr) {
+                  instance.surface->requestRedraw();
+                }
+              },
+              [&instance, idLower]() {
+                auto* itm = findDockItemById(instance, idLower);
+                if (itm == nullptr || itm->dotIndicators[0] == nullptr || !itm->dotVisible[0]) {
+                  return;
+                }
+                itm->activeDotPulseAnimId = instance.animations.animate(
+                    1.35F, 1.0F, 140.0F, Easing::EaseOutBack,
+                    [&instance, idLower](float s) {
+                      auto* cur = findDockItemById(instance, idLower);
+                      if (cur == nullptr || cur->dotIndicators[0] == nullptr || !cur->dotVisible[0]) {
+                        return;
+                      }
+                      cur->dotIndicators[0]->setScale(s);
+                      if (instance.surface != nullptr) {
+                        instance.surface->requestRedraw();
+                      }
+                    },
+                    [&instance, idLower]() {
+                      auto* cur = findDockItemById(instance, idLower);
+                      if (cur != nullptr) {
+                        cur->activeDotPulseAnimId = 0;
+                        if (cur->dotIndicators[0] != nullptr && cur->dotVisible[0]) {
+                          cur->dotIndicators[0]->setScale(1.0F);
+                        }
+                      }
+                    },
+                    itm->dotIndicators[0]
+                );
+              },
+              item.dotIndicators[0]
+          );
+        }
+        item.wasActive = model.active;
       }
 
       if (item.badge != nullptr && item.badgeLabel != nullptr) {
@@ -1427,6 +1758,7 @@ namespace shell::dock {
       float restCenterMain = 0.0F;
       float iconBaseX = kCellPad;
       float iconBaseY = kCellPad;
+      bool isPulsing = false;
     };
 
     std::vector<HoverSlot> slots;
@@ -1445,6 +1777,7 @@ namespace shell::dock {
               .restCenterMain = itemRestCenterMain(instance.launcherRestMainPos, cellMain),
               .iconBaseX = kCellPad,
               .iconBaseY = launcherIconBaseY(cfg, iSize),
+              .isPulsing = (instance.launcherTapAnimId != 0),
           }
       );
     }
@@ -1465,6 +1798,7 @@ namespace shell::dock {
               .restCrossPos = item.restCrossPos,
               .baseScale = model.active ? cfg.activeScale : cfg.inactiveScale,
               .restCenterMain = itemRestCenterMain(item.restMainPos, cellMain),
+              .isPulsing = (item.tapAnimId != 0 || item.isLaunching),
           }
       );
     }
@@ -1482,6 +1816,7 @@ namespace shell::dock {
               .restCenterMain = itemRestCenterMain(instance.launcherRestMainPos, cellMain),
               .iconBaseX = kCellPad,
               .iconBaseY = launcherIconBaseY(cfg, iSize),
+              .isPulsing = (instance.launcherTapAnimId != 0),
           }
       );
     }
@@ -1527,7 +1862,7 @@ namespace shell::dock {
 
       if (applyHoverIconScale(
               slot.iconNode, *slot.visualScale, *slot.scaleAnimId, instance, slot.targetScale, slot.baseScale,
-              lerpFactor, edge, slot.iconBaseX, slot.iconBaseY, iSize, slot.badge, badgeSize
+              lerpFactor, edge, slot.iconBaseX, slot.iconBaseY, iSize, slot.badge, badgeSize, slot.isPulsing
           )) {
         needsMoreFrames = true;
       }
