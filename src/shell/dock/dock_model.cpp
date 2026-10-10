@@ -57,6 +57,93 @@ namespace shell::dock {
     return true;
   }
 
+  std::string extractExecBinary(std::string_view exec) {
+    if (exec.empty()) {
+      return {};
+    }
+    std::size_t start = 0;
+    while (start < exec.size() && std::isspace(static_cast<unsigned char>(exec[start])) != 0) {
+      ++start;
+    }
+    while (start < exec.size()) {
+      std::size_t end = start;
+      while (end < exec.size() && std::isspace(static_cast<unsigned char>(exec[end])) == 0) {
+        ++end;
+      }
+      std::string_view token = exec.substr(start, end - start);
+      if (token.size() >= 2
+          && ((token.front() == '"' && token.back() == '"') || (token.front() == '\'' && token.back() == '\''))) {
+        token = token.substr(1, token.size() - 2);
+      }
+      if (token.contains('=')) {
+        start = end;
+        while (start < exec.size() && std::isspace(static_cast<unsigned char>(exec[start])) != 0) {
+          ++start;
+        }
+        continue;
+      }
+      if (const auto slash = token.find_last_of('/'); slash != std::string_view::npos) {
+        token = token.substr(slash + 1);
+      }
+      std::string lower = StringUtils::toLower(std::string(token));
+      if (lower == "env" || lower == "prime-run" || lower == "gamemoderun" || lower == "systemd-run") {
+        start = end;
+        while (start < exec.size() && std::isspace(static_cast<unsigned char>(exec[start])) != 0) {
+          ++start;
+        }
+        continue;
+      }
+      if (lower == "flatpak" || lower == "run") {
+        start = end;
+        while (start < exec.size() && std::isspace(static_cast<unsigned char>(exec[start])) != 0) {
+          ++start;
+        }
+        continue;
+      }
+      return lower;
+    }
+    return {};
+  }
+
+  bool isEntryAlreadyRepresentedInDock(const std::vector<DesktopEntry>& entries, const DesktopEntry& candidate) {
+    const std::string candidateIdLower = StringUtils::toLower(candidate.id);
+    const std::string candidateWmClassLower = StringUtils::toLower(candidate.startupWmClass);
+    const std::string candidateExecBinary = extractExecBinary(candidate.exec);
+
+    for (const auto& entry : entries) {
+      const std::string entryIdLower = StringUtils::toLower(entry.id);
+      if (!candidateIdLower.empty() && entryIdLower == candidateIdLower) {
+        return true;
+      }
+      if (!candidateWmClassLower.empty()) {
+        if (!entry.startupWmClass.empty() && StringUtils::toLower(entry.startupWmClass) == candidateWmClassLower) {
+          return true;
+        }
+        if (entryIdLower == candidateWmClassLower) {
+          return true;
+        }
+      }
+      if (!candidateExecBinary.empty()) {
+        const std::string entryExecBinary = extractExecBinary(entry.exec);
+        if (!entryExecBinary.empty() && entryExecBinary == candidateExecBinary) {
+          return true;
+        }
+        if (entryIdLower == candidateExecBinary) {
+          return true;
+        }
+      }
+      if (!candidateIdLower.empty() && !entryIdLower.empty()) {
+        if (candidateIdLower.starts_with(entryIdLower + "-")
+            || candidateIdLower.starts_with(entryIdLower + "_")
+            || entryIdLower.starts_with(candidateIdLower + "-")
+            || entryIdLower.starts_with(candidateIdLower + "_")) {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
   namespace {
 
     bool
@@ -109,6 +196,12 @@ namespace shell::dock {
         if (!alreadyListsResolvedEntry(itemEntries, run)) {
           itemEntries.push_back(run.entry);
         }
+      }
+    }
+
+    for (const auto& launching : deps.launchingEntries) {
+      if (!isEntryAlreadyRepresentedInDock(itemEntries, launching)) {
+        itemEntries.push_back(launching);
       }
     }
 

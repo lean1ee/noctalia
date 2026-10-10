@@ -40,8 +40,13 @@ namespace shell::dock {
     wl_output* output = nullptr;
     const std::string& globalActiveIdLower;
     const std::vector<DesktopEntry>& pinnedEntries;
+    std::vector<DesktopEntry> launchingEntries{};
     std::uint64_t sourceSerial = 0;
   };
+
+  [[nodiscard]] std::string extractExecBinary(std::string_view exec);
+  [[nodiscard]] bool
+  isEntryAlreadyRepresentedInDock(const std::vector<DesktopEntry>& entries, const DesktopEntry& candidate);
 
   [[nodiscard]] wl_output* dockFilterOutput(const DockConfig& cfg, wl_output* instanceOutput);
   [[nodiscard]] std::string currentActiveEntryIdLower(const CompositorPlatform& platform);

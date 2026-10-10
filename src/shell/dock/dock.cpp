@@ -355,35 +355,123 @@ void Dock::onAppLaunched(const DesktopEntry& entry) {
     return;
   }
   const std::string idLower = StringUtils::toLower(entry.id);
+  DesktopEntry resolvedEntry = entry;
+  if (resolvedEntry.name.empty() || resolvedEntry.icon.empty()) {
+    for (const auto& de : desktopEntries()) {
+      if (StringUtils::toLower(de.id) == idLower) {
+        resolvedEntry = de;
+        break;
+      }
+    }
+  }
 
-  // Animate launch bounce only for apps that are pinned in the dock.
-  // Pinned entries will bounce until their window is mapped, while unpinned apps
-  // enter the dock cleanly when their window appears, preventing phantom duplicate icons.
+  pruneLaunchingApps();
+
+  // 1. Check if the launched app maps to an already pinned app in any dock instance:
+  bool matchedExisting = false;
   for (auto& instPtr : m_instances) {
     if (instPtr == nullptr) {
       continue;
     }
-    const auto it =
-        std::find_if(instPtr->pinnedEntries.begin(), instPtr->pinnedEntries.end(), [&](const DesktopEntry& pinned) {
-          if (StringUtils::toLower(pinned.id) == idLower) {
-            return true;
-          }
-          if (!entry.startupWmClass.empty()
-              && StringUtils::toLower(pinned.startupWmClass) == StringUtils::toLower(entry.startupWmClass)) {
-            return true;
-          }
-          if (!pinned.id.empty() && !entry.exec.empty()) {
-            const std::string pinnedIdLower = StringUtils::toLower(pinned.id);
-            const std::string entryExecLower = StringUtils::toLower(entry.exec);
-            if (entryExecLower.starts_with(pinnedIdLower) || entry.idLower.starts_with(pinnedIdLower)) {
-              return true;
-            }
-          }
-          return false;
-        });
+    for (const auto& pinned : instPtr->pinnedEntries) {
+      std::vector<DesktopEntry> singlePinned{pinned};
+      if (shell::dock::isEntryAlreadyRepresentedInDock(singlePinned, resolvedEntry)) {
+        matchedExisting = true;
+        shell::dock::startDockItemLaunchBounce(*instPtr, StringUtils::toLower(pinned.id));
+        break;
+      }
+    }
+  }
 
-    if (it != instPtr->pinnedEntries.end()) {
-      shell::dock::startDockItemLaunchBounce(*instPtr, StringUtils::toLower(it->id));
+  // If already pinned, the pinned icon is now bouncing. Do NOT add a duplicate!
+  if (matchedExisting) {
+    return;
+  }
+
+  // 2. Also check if it maps to an already running app on the dock:
+  for (auto& instPtr : m_instances) {
+    if (instPtr == nullptr) {
+      continue;
+    }
+    std::vector<DesktopEntry> runningEntries;
+    for (const auto& item : instPtr->snapshot.items) {
+      if (item.running || item.instanceCount > 0) {
+        runningEntries.push_back(item.entry);
+      }
+    }
+    if (shell::dock::isEntryAlreadyRepresentedInDock(runningEntries, resolvedEntry)) {
+      matchedExisting = true;
+      break;
+    }
+  }
+
+  if (matchedExisting) {
+    return;
+  }
+
+  // 3. Otherwise, it is an unpinned app (e.g. GIMP, LibreOffice, etc.).
+  // Add it to m_launchingApps so it appears on the dock and bounces!
+  auto it = std::find_if(m_launchingApps.begin(), m_launchingApps.end(), [&](const auto& app) {
+    return app.idLower == idLower;
+  });
+  if (it == m_launchingApps.end()) {
+    m_launchingApps.push_back(
+        LaunchingApp{
+            .entry = resolvedEntry,
+            .idLower = idLower,
+            .startupWmClassLower = StringUtils::toLower(resolvedEntry.startupWmClass),
+            .execBinary = shell::dock::extractExecBinary(resolvedEntry.exec),
+            .launchTime = std::chrono::steady_clock::now(),
+        }
+    );
+  } else {
+    it->launchTime = std::chrono::steady_clock::now();
+  }
+
+  for (auto& instPtr : m_instances) {
+    if (instPtr != nullptr) {
+      shell::dock::startDockItemLaunchBounce(*instPtr, idLower);
+    }
+  }
+
+  m_launchPruneTimer.start(std::chrono::milliseconds(10500), [this]() {
+    pruneLaunchingApps();
+    refresh();
+  });
+
+  refresh();
+}
+
+void Dock::pruneLaunchingApps() {
+  const auto now = std::chrono::steady_clock::now();
+  std::vector<std::string> toStop;
+
+  std::erase_if(m_launchingApps, [&](const auto& app) {
+    const bool expired = (now - app.launchTime > std::chrono::seconds(10));
+    bool hasWindows = false;
+    if (m_platform != nullptr) {
+      auto windows = shell::dock::windowsForDockItem(*m_platform, app.idLower, app.startupWmClassLower, nullptr);
+      if (!windows.empty()) {
+        hasWindows = true;
+      } else if (!app.execBinary.empty()) {
+        auto windowsByBinary = shell::dock::windowsForDockItem(*m_platform, app.execBinary, app.execBinary, nullptr);
+        hasWindows = !windowsByBinary.empty();
+      }
+    }
+    if (expired || hasWindows) {
+      if (expired) {
+        toStop.push_back(app.idLower);
+      }
+      return true;
+    }
+    return false;
+  });
+
+  for (const auto& idLower : toStop) {
+    for (auto& instPtr : m_instances) {
+      if (instPtr != nullptr) {
+        shell::dock::stopDockItemLaunchBounce(*instPtr, idLower);
+      }
     }
   }
 }
@@ -1018,12 +1106,20 @@ bool Dock::syncInstanceModel(shell::dock::DockInstance& instance) {
       instance.config, instance.lastPinnedConfig, instance.pinnedEntries, instance.modelSerial, instance.entriesVersion
   );
 
+  pruneLaunchingApps();
+  std::vector<DesktopEntry> launchingEntries;
+  launchingEntries.reserve(m_launchingApps.size());
+  for (const auto& app : m_launchingApps) {
+    launchingEntries.push_back(app.entry);
+  }
+
   auto next = shell::dock::buildDockSnapshot({
       .platform = *m_platform,
       .config = instance.config,
       .output = instance.output,
       .globalActiveIdLower = activeIdLower,
       .pinnedEntries = instance.pinnedEntries,
+      .launchingEntries = launchingEntries,
       .sourceSerial = instance.modelSerial,
   });
 
@@ -1075,7 +1171,16 @@ void Dock::rebuildItems(shell::dock::DockInstance& instance) {
 
   for (std::size_t i = 0; i < instance.items.size(); ++i) {
     auto& item = instance.items[i];
-    if (item.isLaunching && i < instance.snapshot.items.size()) {
+    const bool isLaunchingApp = std::any_of(m_launchingApps.begin(), m_launchingApps.end(), [&](const auto& app) {
+      return app.idLower == item.idLower;
+    });
+    if (isLaunchingApp && !item.isLaunching) {
+      if (i < instance.snapshot.items.size()
+          && !instance.snapshot.items[i].running
+          && instance.snapshot.items[i].instanceCount == 0) {
+        shell::dock::startDockItemLaunchBounce(instance, item.idLower);
+      }
+    } else if (item.isLaunching && i < instance.snapshot.items.size()) {
       const auto& model = instance.snapshot.items[i];
       if (model.running || model.instanceCount > 0) {
         shell::dock::stopDockItemLaunchBounce(instance, item.idLower);
@@ -1104,7 +1209,16 @@ void Dock::updateVisuals(shell::dock::DockInstance& instance) {
 
   for (std::size_t i = 0; i < instance.items.size(); ++i) {
     auto& item = instance.items[i];
-    if (item.isLaunching && i < instance.snapshot.items.size()) {
+    const bool isLaunchingApp = std::any_of(m_launchingApps.begin(), m_launchingApps.end(), [&](const auto& app) {
+      return app.idLower == item.idLower;
+    });
+    if (isLaunchingApp && !item.isLaunching) {
+      if (i < instance.snapshot.items.size()
+          && !instance.snapshot.items[i].running
+          && instance.snapshot.items[i].instanceCount == 0) {
+        shell::dock::startDockItemLaunchBounce(instance, item.idLower);
+      }
+    } else if (item.isLaunching && i < instance.snapshot.items.size()) {
       const auto& model = instance.snapshot.items[i];
       if (model.running || model.instanceCount > 0) {
         shell::dock::stopDockItemLaunchBounce(instance, item.idLower);
