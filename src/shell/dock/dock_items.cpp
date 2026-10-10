@@ -482,9 +482,9 @@ namespace shell::dock {
     );
   }
 
-  void stopDockItemLaunchBreathing(DockInstance& instance, std::string_view idLower);
+  void stopDockItemLaunchBounce(DockInstance& instance, std::string_view idLower);
 
-  void stepDockItemLaunchPulse(DockInstance& instance, const std::string& idLower, bool expand) {
+  void stepDockItemLaunchBounce(DockInstance& instance, const std::string& idLower) {
     auto* item = findDockItemById(instance, idLower);
     if (item == nullptr || !item->isLaunching) {
       return;
@@ -498,54 +498,178 @@ namespace shell::dock {
 
     // Safety timeout: 10 seconds (10000ms)
     if (item->launchElapsedMs >= 10000) {
-      stopDockItemLaunchBreathing(instance, idLower);
+      stopDockItemLaunchBounce(instance, idLower);
       return;
     }
-    item->launchElapsedMs += 700;
+    item->launchElapsedMs += 500;
 
-    const float baseScale = item->visualScale > 0.0F ? item->visualScale : 1.0F;
-    const float fromScale = expand ? baseScale * 0.95F : baseScale * 1.05F;
-    const float toScale = expand ? baseScale * 1.05F : baseScale * 0.95F;
+    const DockEdge edge = instance.config.position;
+    const float jumpHeight = 12.0F;
 
+    // Upward jump: 0 -> jumpHeight (200ms, EaseOutQuad)
     item->launchAnimId = instance.animations.animate(
-        fromScale, toScale, 700.0F, Easing::EaseInOutQuad,
-        [&instance, idLower](float s) {
+        0.0F, jumpHeight, 200.0F, Easing::EaseOutQuad,
+        [&instance, idLower, edge](float offset) {
           auto* cur = findDockItemById(instance, idLower);
-          if (cur == nullptr || !cur->isLaunching) {
+          if (cur == nullptr) {
             return;
           }
+          cur->bounceOffset = offset;
           Node* n = cur->iconImage != nullptr ? static_cast<Node*>(cur->iconImage) : static_cast<Node*>(cur->iconGlyph);
           if (n != nullptr) {
-            n->setScale(s);
+            float x = kCellPad;
+            float y = kCellPad;
+            shell::dock::shiftAlongEdge(edge, x, y, -offset);
+            n->setPosition(x, y);
           }
           if (instance.surface != nullptr) {
             instance.surface->requestRedraw();
           }
         },
-        [&instance, idLower, expand]() { stepDockItemLaunchPulse(instance, idLower, !expand); }, iconNode
+        [&instance, idLower, edge, jumpHeight]() {
+          auto* cur = findDockItemById(instance, idLower);
+          if (cur == nullptr || !cur->isLaunching) {
+            if (cur != nullptr) {
+              cur->bounceOffset = 0.0F;
+              Node* n =
+                  cur->iconImage != nullptr ? static_cast<Node*>(cur->iconImage) : static_cast<Node*>(cur->iconGlyph);
+              if (n != nullptr) {
+                n->setPosition(kCellPad, kCellPad);
+              }
+            }
+            return;
+          }
+
+          // Downward fall: jumpHeight -> 0 (180ms, EaseInQuad)
+          cur->launchAnimId = instance.animations.animate(
+              jumpHeight, 0.0F, 180.0F, Easing::EaseInQuad,
+              [&instance, idLower, edge](float offset) {
+                auto* itm = findDockItemById(instance, idLower);
+                if (itm == nullptr) {
+                  return;
+                }
+                itm->bounceOffset = offset;
+                Node* n =
+                    itm->iconImage != nullptr ? static_cast<Node*>(itm->iconImage) : static_cast<Node*>(itm->iconGlyph);
+                if (n != nullptr) {
+                  float x = kCellPad;
+                  float y = kCellPad;
+                  shell::dock::shiftAlongEdge(edge, x, y, -offset);
+                  n->setPosition(x, y);
+                }
+                if (instance.surface != nullptr) {
+                  instance.surface->requestRedraw();
+                }
+              },
+              [&instance, idLower, edge]() {
+                auto* itm = findDockItemById(instance, idLower);
+                if (itm == nullptr) {
+                  return;
+                }
+                itm->bounceOffset = 0.0F;
+                Node* n =
+                    itm->iconImage != nullptr ? static_cast<Node*>(itm->iconImage) : static_cast<Node*>(itm->iconGlyph);
+                if (n != nullptr) {
+                  n->setPosition(kCellPad, kCellPad);
+                }
+                if (!itm->isLaunching) {
+                  return;
+                }
+
+                // Subtle squash on impact: 50ms
+                const float baseScale = itm->visualScale > 0.0F ? itm->visualScale : 1.0F;
+                itm->launchAnimId = instance.animations.animate(
+                    baseScale, baseScale * 0.94F, 50.0F, Easing::EaseOutCubic,
+                    [&instance, idLower](float s) {
+                      auto* c = findDockItemById(instance, idLower);
+                      if (c == nullptr) {
+                        return;
+                      }
+                      Node* node =
+                          c->iconImage != nullptr ? static_cast<Node*>(c->iconImage) : static_cast<Node*>(c->iconGlyph);
+                      if (node != nullptr) {
+                        node->setScale(s);
+                      }
+                      if (instance.surface != nullptr) {
+                        instance.surface->requestRedraw();
+                      }
+                    },
+                    [&instance, idLower, baseScale]() {
+                      auto* c = findDockItemById(instance, idLower);
+                      if (c == nullptr) {
+                        return;
+                      }
+                      // Rebound back to baseScale: 70ms EaseOutBack
+                      c->launchAnimId = instance.animations.animate(
+                          baseScale * 0.94F, baseScale, 70.0F, Easing::EaseOutBack,
+                          [&instance, idLower](float s) {
+                            auto* it = findDockItemById(instance, idLower);
+                            if (it == nullptr) {
+                              return;
+                            }
+                            Node* node = it->iconImage != nullptr ? static_cast<Node*>(it->iconImage)
+                                                                  : static_cast<Node*>(it->iconGlyph);
+                            if (node != nullptr) {
+                              node->setScale(s);
+                            }
+                            if (instance.surface != nullptr) {
+                              instance.surface->requestRedraw();
+                            }
+                          },
+                          [&instance, idLower, baseScale]() {
+                            auto* it = findDockItemById(instance, idLower);
+                            if (it == nullptr) {
+                              return;
+                            }
+                            Node* node = it->iconImage != nullptr ? static_cast<Node*>(it->iconImage)
+                                                                  : static_cast<Node*>(it->iconGlyph);
+                            if (node != nullptr) {
+                              node->setScale(baseScale);
+                            }
+                            if (!it->isLaunching) {
+                              return;
+                            }
+                            // Pause 100ms then next jump!
+                            it->launchAnimId = instance.animations.animate(
+                                0.0F, 1.0F, 100.0F, Easing::Linear, [](float) {},
+                                [&instance, idLower]() { stepDockItemLaunchBounce(instance, idLower); }, it->area
+                            );
+                          },
+                          c->area
+                      );
+                    },
+                    itm->area
+                );
+              },
+              cur->area
+          );
+        },
+        item->area
     );
   }
 
-  void startDockItemLaunchBreathing(DockInstance& instance, std::string_view idLower) {
+  void startDockItemLaunchBounce(DockInstance& instance, std::string_view idLower) {
     auto* item = findDockItemById(instance, idLower);
     if (item == nullptr || item->isLaunching) {
       return;
     }
     item->isLaunching = true;
+    item->bounceOffset = 0.0F;
     item->launchElapsedMs = 0;
     if (item->launchAnimId != 0) {
       instance.animations.cancel(item->launchAnimId);
       item->launchAnimId = 0;
     }
-    stepDockItemLaunchPulse(instance, std::string(idLower), true);
+    stepDockItemLaunchBounce(instance, std::string(idLower));
   }
 
-  void stopDockItemLaunchBreathing(DockInstance& instance, std::string_view idLower) {
+  void stopDockItemLaunchBounce(DockInstance& instance, std::string_view idLower) {
     auto* item = findDockItemById(instance, idLower);
-    if (item == nullptr || !item->isLaunching) {
+    if (item == nullptr) {
       return;
     }
     item->isLaunching = false;
+    item->bounceOffset = 0.0F;
     item->launchElapsedMs = 0;
     if (item->launchAnimId != 0) {
       instance.animations.cancel(item->launchAnimId);
@@ -554,41 +678,14 @@ namespace shell::dock {
 
     Node* iconNode =
         item->iconImage != nullptr ? static_cast<Node*>(item->iconImage) : static_cast<Node*>(item->iconGlyph);
-    if (iconNode == nullptr) {
-      return;
+    if (iconNode != nullptr) {
+      const float targetScale = item->visualScale > 0.0F ? item->visualScale : 1.0F;
+      iconNode->setScale(targetScale);
+      iconNode->setPosition(kCellPad, kCellPad);
     }
-
-    const float targetScale = item->visualScale > 0.0F ? item->visualScale : 1.0F;
-    const std::string id(idLower);
-
-    item->launchAnimId = instance.animations.animate(
-        iconNode->scaleX(), targetScale, 150.0F, Easing::EaseOutCubic,
-        [&instance, id](float s) {
-          auto* cur = findDockItemById(instance, id);
-          if (cur == nullptr) {
-            return;
-          }
-          Node* n = cur->iconImage != nullptr ? static_cast<Node*>(cur->iconImage) : static_cast<Node*>(cur->iconGlyph);
-          if (n != nullptr) {
-            n->setScale(s);
-          }
-          if (instance.surface != nullptr) {
-            instance.surface->requestRedraw();
-          }
-        },
-        [&instance, id, targetScale]() {
-          auto* cur = findDockItemById(instance, id);
-          if (cur != nullptr) {
-            cur->launchAnimId = 0;
-            Node* n =
-                cur->iconImage != nullptr ? static_cast<Node*>(cur->iconImage) : static_cast<Node*>(cur->iconGlyph);
-            if (n != nullptr) {
-              n->setScale(targetScale);
-            }
-          }
-        },
-        iconNode
-    );
+    if (instance.surface != nullptr) {
+      instance.surface->requestRedraw();
+    }
   }
 
   void handleItemClick(DockInstance& instance, const DockItemAction& action, DockItemClickContext& context);
@@ -1298,7 +1395,10 @@ namespace shell::dock {
       if (iconNode != nullptr) {
         if (!cfg.magnification) {
           if (!isDraggedItem) {
-            iconNode->setPosition(kCellPad, kCellPad);
+            float iconX = kCellPad;
+            float iconY = kCellPad;
+            shell::dock::shiftAlongEdge(edge, iconX, iconY, -item.bounceOffset);
+            iconNode->setPosition(iconX, iconY);
           }
           if (item.visualScale < 0.0F) {
             item.visualScale = iconScale;
@@ -1344,7 +1444,7 @@ namespace shell::dock {
       const std::size_t count = model.instanceCount;
 
       if (item.isLaunching && (model.running || model.instanceCount > 0)) {
-        stopDockItemLaunchBreathing(instance, item.idLower);
+        stopDockItemLaunchBounce(instance, item.idLower);
       }
 
       if (cfg.showDots) {

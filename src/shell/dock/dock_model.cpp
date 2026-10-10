@@ -110,11 +110,6 @@ namespace shell::dock {
           itemEntries.push_back(run.entry);
         }
       }
-      for (const auto& launching : deps.launchingEntries) {
-        if (!alreadyListsResolvedEntry(itemEntries, app_identity::ResolvedRunningApp{.entry = launching})) {
-          itemEntries.push_back(launching);
-        }
-      }
     }
 
     snapshot.items.reserve(itemEntries.size());

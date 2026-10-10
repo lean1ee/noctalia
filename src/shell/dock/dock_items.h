@@ -57,6 +57,7 @@ namespace shell::dock {
     float badgeScale = 0.0F;
     bool badgeVisible = false;
     bool isLaunching = false;
+    float bounceOffset = 0.0F;
     AnimationManager::Id launchAnimId = 0;
     std::uint64_t launchElapsedMs = 0;
   };
@@ -105,8 +106,8 @@ namespace shell::dock {
   void clearDragVisuals(DockInstance& instance, const DockConfig& cfg);
   void dismissDockTooltip();
   void triggerDockItemTapPulse(DockInstance& instance, std::size_t itemIndex);
-  void startDockItemLaunchBreathing(DockInstance& instance, std::string_view idLower);
-  void stopDockItemLaunchBreathing(DockInstance& instance, std::string_view idLower);
+  void startDockItemLaunchBounce(DockInstance& instance, std::string_view idLower);
+  void stopDockItemLaunchBounce(DockInstance& instance, std::string_view idLower);
   [[nodiscard]] std::size_t computeDragTargetIndex(const DockInstance& instance, const DockConfig& cfg, float mainPos);
 
 } // namespace shell::dock
