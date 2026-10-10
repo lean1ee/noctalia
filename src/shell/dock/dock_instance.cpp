@@ -428,13 +428,7 @@ namespace shell::dock {
       // Synchronize newly created row/viewport positions immediately to startGeo on frame 0
       // so already opened icons do not jump before the animation begins.
       applyLayout(startGeo);
-
-      // On expand: pre-expand compositor blur once so the capsule animates over the blurred backdrop
-      // without per-frame Wayland IPC or compositor texture recreation across any GPU (AMD, Intel, NVIDIA).
-      const bool isExpanding = vert ? (endGeo.panelH >= startGeo.panelH) : (endGeo.panelW >= startGeo.panelW);
-      if (isExpanding) {
-        applyDockCompositorBlur(instance, cfg, &endGeo);
-      }
+      applyDockCompositorBlur(instance, cfg, &startGeo);
 
       instance.resizeAnimId = instance.animations.animate(
           0.0F, 1.0F, Style::animNormal, Easing::EaseOutCubic,
@@ -445,6 +439,7 @@ namespace shell::dock {
             instance.currentPanelGeometry.panelH = std::lerp(startGeo.panelH, endGeo.panelH, t);
 
             applyLayout(instance.currentPanelGeometry);
+            applyDockCompositorBlur(instance, instance.config, &instance.currentPanelGeometry);
             if (instance.surface != nullptr) {
               instance.surface->requestRedraw();
             }
