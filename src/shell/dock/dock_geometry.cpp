@@ -326,7 +326,7 @@ namespace shell::dock {
         }
       }
       const float maxSpan = std::max(0.0F, surfaceW - bleedL - bleedR - insetL - insetR - mainPad * 2.0F);
-      const float contentSpan = itemCount > 0 ? static_cast<float>(dockContentSize(cfg, itemCount)) : maxSpan;
+      const float contentSpan = static_cast<float>(dockContentSize(cfg, itemCount));
       const float panelW = std::min(maxSpan, contentSpan);
       const float panelX = bleedL + insetL + mainPad + (maxSpan - panelW) * 0.5F;
       return DockPanelGeometry{
@@ -346,7 +346,7 @@ namespace shell::dock {
       }
     }
     const float maxSpan = std::max(0.0F, surfaceH - bleedU - bleedD - insetT - insetB - mainPad * 2.0F);
-    const float contentSpan = itemCount > 0 ? static_cast<float>(dockContentSize(cfg, itemCount)) : maxSpan;
+    const float contentSpan = static_cast<float>(dockContentSize(cfg, itemCount));
     const float panelH = std::min(maxSpan, contentSpan);
     const float panelY = bleedU + insetT + mainPad + (maxSpan - panelH) * 0.5F;
     return DockPanelGeometry{
@@ -418,20 +418,33 @@ namespace shell::dock {
     const int mainPad = dockHoverZoomMainPad(cfg);
     const bool vertical = isVerticalEdge(cfg.position);
     if (!vertical) {
+      if (panel.panelW <= 0.0F) {
+        return {InputRect{0, 0, surfaceW, surfaceH}};
+      }
       const int px = std::max(0, static_cast<int>(std::lround(panel.panelX)) - mainPad);
       const int pw = std::min(surfaceW - px, static_cast<int>(std::lround(panel.panelW)) + mainPad * 2);
-      const int py = cfg.position == DockEdge::Bottom
-          ? std::max(0, static_cast<int>(std::lround(panel.panelY)) - zoomPad)
-          : static_cast<int>(std::lround(panel.panelY));
-      const int ph = std::min(surfaceH - py, static_cast<int>(std::lround(panel.panelH)) + zoomPad);
+      if (cfg.position == DockEdge::Bottom) {
+        const int py = std::max(0, static_cast<int>(std::lround(panel.panelY)) - zoomPad);
+        const int ph = surfaceH - py;
+        return {InputRect{px, py, pw, ph}};
+      }
+      const int py = 0;
+      const int ph = std::min(surfaceH, static_cast<int>(std::lround(panel.panelY + panel.panelH)) + zoomPad);
       return {InputRect{px, py, pw, ph}};
     }
 
-    const int px = cfg.position == DockEdge::Right ? std::max(0, static_cast<int>(std::lround(panel.panelX)) - zoomPad)
-                                                   : static_cast<int>(std::lround(panel.panelX));
-    const int pw = std::min(surfaceW - px, static_cast<int>(std::lround(panel.panelW)) + zoomPad);
+    if (panel.panelH <= 0.0F) {
+      return {InputRect{0, 0, surfaceW, surfaceH}};
+    }
     const int py = std::max(0, static_cast<int>(std::lround(panel.panelY)) - mainPad);
     const int ph = std::min(surfaceH - py, static_cast<int>(std::lround(panel.panelH)) + mainPad * 2);
+    if (cfg.position == DockEdge::Right) {
+      const int px = std::max(0, static_cast<int>(std::lround(panel.panelX)) - zoomPad);
+      const int pw = surfaceW - px;
+      return {InputRect{px, py, pw, ph}};
+    }
+    const int px = 0;
+    const int pw = std::min(surfaceW, static_cast<int>(std::lround(panel.panelX + panel.panelW)) + zoomPad);
     return {InputRect{px, py, pw, ph}};
   }
 

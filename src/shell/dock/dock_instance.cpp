@@ -160,16 +160,19 @@ namespace shell::dock {
       return;
     }
 
+    const DockPanelGeometry& geom =
+        (panelGeometry.panelW > 0.0F && panelGeometry.panelH > 0.0F) ? panelGeometry : instance.panelGeometry;
+
     if (!dockUsesAnyAutoHide(cfg)) {
       instance.surface->setInputRegion(
-          shell::dock::computeInputRegion(cfg, panelGeometry, surfW, surfH, false, instance.fractionalScale)
+          shell::dock::computeInputRegion(cfg, geom, surfW, surfH, false, instance.fractionalScale)
       );
       return;
     }
 
     const bool fullSurface = instance.pointerInside || (cfg.smartAutoHide && instance.smartAutoHidePinnedVisible);
     instance.surface->setInputRegion(
-        shell::dock::computeInputRegion(cfg, panelGeometry, surfW, surfH, !fullSurface, instance.fractionalScale)
+        shell::dock::computeInputRegion(cfg, geom, surfW, surfH, !fullSurface, instance.fractionalScale)
     );
   }
 
@@ -325,6 +328,7 @@ namespace shell::dock {
 
     const auto totalItemCount = instance.items.size() + shell::dock::dockLauncherButtonCount(cfg);
     const auto panelGeometry = shell::dock::computePanelGeometry(cfg, shadowConfig, w, h, totalItemCount);
+    instance.panelGeometry = panelGeometry;
 
     // Update root size on reconfigure.
     instance.sceneRoot->setSize(w, h);
@@ -450,7 +454,7 @@ namespace shell::dock {
     constexpr float kSettledThreshold = 0.999F;
     const float current = inst.hideOpacity;
     if (current >= kSettledThreshold) {
-      syncDockAutoHideInputRegion(inst, cfg, DockPanelGeometry{});
+      syncDockAutoHideInputRegion(inst, cfg, inst.panelGeometry);
       inst.surface->requestRedraw();
       return;
     }
@@ -464,7 +468,7 @@ namespace shell::dock {
         },
         [&inst]() { inst.hideAnimId = 0; }
     );
-    syncDockAutoHideInputRegion(inst, cfg, DockPanelGeometry{});
+    syncDockAutoHideInputRegion(inst, cfg, inst.panelGeometry);
     inst.surface->requestRedraw();
   }
 
@@ -486,7 +490,7 @@ namespace shell::dock {
         },
         [&inst]() { inst.hideAnimId = 0; }
     );
-    syncDockAutoHideInputRegion(inst, inst.config, DockPanelGeometry{});
+    syncDockAutoHideInputRegion(inst, inst.config, inst.panelGeometry);
     if (inst.surface) {
       inst.surface->requestRedraw();
     }
