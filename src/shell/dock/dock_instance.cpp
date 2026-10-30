@@ -146,11 +146,10 @@ namespace shell::dock {
     }
   }
 
-  // Match the bar: while slid away use the edge strip (or full surface when pinned/hovered).
-  // Never hit-test the slide-translated panel — that goes off-surface when smart_auto_hide
-  // flips to pinned before hideOpacity recovers (dock rebuild on a new window).
-  void
-  syncDockAutoHideInputRegion(DockInstance& instance, const DockConfig& cfg, const DockPanelGeometry& panelGeometry) {
+  // While slid away use the edge strip; when pinned or hovered use the unslid capsule region. Never
+  // hit-test the slide-translated panel: it goes off-surface when smart_auto_hide flips to pinned
+  // before hideOpacity recovers (dock rebuild on a new window).
+  void syncDockAutoHideInputRegion(DockInstance& instance, const DockConfig& cfg) {
     if (instance.surface == nullptr) {
       return;
     }
@@ -160,19 +159,16 @@ namespace shell::dock {
       return;
     }
 
-    const DockPanelGeometry& geom =
-        (panelGeometry.panelW > 0.0F && panelGeometry.panelH > 0.0F) ? panelGeometry : instance.panelGeometry;
-
     if (!dockUsesAnyAutoHide(cfg)) {
       instance.surface->setInputRegion(
-          shell::dock::computeInputRegion(cfg, geom, surfW, surfH, false, instance.fractionalScale)
+          shell::dock::computeInputRegion(cfg, instance.panelGeometry, surfW, surfH, false, instance.fractionalScale)
       );
       return;
     }
 
-    const bool fullSurface = instance.pointerInside || (cfg.smartAutoHide && instance.smartAutoHidePinnedVisible);
+    const bool revealed = instance.pointerInside || (cfg.smartAutoHide && instance.smartAutoHidePinnedVisible);
     instance.surface->setInputRegion(
-        shell::dock::computeInputRegion(cfg, geom, surfW, surfH, !fullSurface, instance.fractionalScale)
+        shell::dock::computeInputRegion(cfg, instance.panelGeometry, surfW, surfH, !revealed, instance.fractionalScale)
     );
   }
 
@@ -327,8 +323,8 @@ namespace shell::dock {
     }
 
     const auto totalItemCount = instance.items.size() + shell::dock::dockLauncherButtonCount(cfg);
-    const auto panelGeometry = shell::dock::computePanelGeometry(cfg, shadowConfig, w, h, totalItemCount);
-    instance.panelGeometry = panelGeometry;
+    instance.panelGeometry = shell::dock::computePanelGeometry(cfg, shadowConfig, w, h, totalItemCount);
+    const auto& panelGeometry = instance.panelGeometry;
 
     // Update root size on reconfigure.
     instance.sceneRoot->setSize(w, h);
@@ -371,9 +367,7 @@ namespace shell::dock {
 
     // The viewport follows the visible pill on its main axis and spans the surface on its cross axis,
     // allowing magnified icons to grow away from the screen edge without escaping past the pill ends.
-    const auto contentLength = static_cast<float>(
-        shell::dock::dockContentSize(cfg, instance.items.size() + shell::dock::dockLauncherButtonCount(cfg))
-    );
+    const auto contentLength = static_cast<float>(shell::dock::dockContentSize(cfg, totalItemCount));
     if (vert) {
       instance.viewport->setPosition(0.0F, panelGeometry.panelY);
       instance.viewport->setSize(w, panelGeometry.panelH);
@@ -400,7 +394,7 @@ namespace shell::dock {
       instance.slideHiddenDy = 0.0F;
     }
     syncDockSlideLayerTransform(instance, cfg);
-    syncDockAutoHideInputRegion(instance, cfg, panelGeometry);
+    syncDockAutoHideInputRegion(instance, cfg);
 
     applyDockCompositorBlur(instance, cfg);
 
@@ -430,8 +424,7 @@ namespace shell::dock {
     }
 
     const auto surfaceGeometry = shell::dock::computeSurfaceGeometry(
-        cfg, shadowConfig, instance.items.size() + shell::dock::dockLauncherButtonCount(cfg), instance.fractionalScale,
-        instance.outputLogicalWidth, instance.outputLogicalHeight
+        cfg, shadowConfig, instance.fractionalScale, instance.outputLogicalWidth, instance.outputLogicalHeight
     );
 
     if (instance.surface->width() != surfaceGeometry.surfaceW
@@ -454,7 +447,7 @@ namespace shell::dock {
     constexpr float kSettledThreshold = 0.999F;
     const float current = inst.hideOpacity;
     if (current >= kSettledThreshold) {
-      syncDockAutoHideInputRegion(inst, cfg, inst.panelGeometry);
+      syncDockAutoHideInputRegion(inst, cfg);
       inst.surface->requestRedraw();
       return;
     }
@@ -468,7 +461,7 @@ namespace shell::dock {
         },
         [&inst]() { inst.hideAnimId = 0; }
     );
-    syncDockAutoHideInputRegion(inst, cfg, inst.panelGeometry);
+    syncDockAutoHideInputRegion(inst, cfg);
     inst.surface->requestRedraw();
   }
 
@@ -490,7 +483,7 @@ namespace shell::dock {
         },
         [&inst]() { inst.hideAnimId = 0; }
     );
-    syncDockAutoHideInputRegion(inst, inst.config, inst.panelGeometry);
+    syncDockAutoHideInputRegion(inst, inst.config);
     if (inst.surface) {
       inst.surface->requestRedraw();
     }

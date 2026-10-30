@@ -546,19 +546,14 @@ bool Dock::onPointerEvent(const PointerEvent& event) {
           },
           [inst = m_hoveredInstance]() { inst->hideAnimId = 0; }
       );
-      // Restore panel input region so magnified icons / capsule receive events,
+      // Restore the revealed capsule region so magnified icons receive events,
       // while clicks outside the capsule pass through to underlying windows.
       if (m_hoveredInstance->surface != nullptr) {
-        const int sw = static_cast<int>(m_hoveredInstance->surface->width());
-        const int sh = static_cast<int>(m_hoveredInstance->surface->height());
-        const auto& shadowConfig = m_config->config().shell.shadow;
-        const auto panelGeo = shell::dock::computePanelGeometry(
-            m_hoveredInstance->config, shadowConfig, static_cast<float>(sw), static_cast<float>(sh),
-            m_hoveredInstance->items.size() + shell::dock::dockLauncherButtonCount(m_hoveredInstance->config)
-        );
         m_hoveredInstance->surface->setInputRegion(
             shell::dock::computeInputRegion(
-                m_hoveredInstance->config, panelGeo, sw, sh, false, m_hoveredInstance->fractionalScale
+                m_hoveredInstance->config, m_hoveredInstance->panelGeometry,
+                static_cast<int>(m_hoveredInstance->surface->width()),
+                static_cast<int>(m_hoveredInstance->surface->height()), false, m_hoveredInstance->fractionalScale
             )
         );
       }
@@ -817,8 +812,7 @@ void Dock::createInstance(const WaylandOutput& output) {
 
   const auto& shadowConfig = m_config->config().shell.shadow;
   LayerSurfaceConfig lsCfg = shell::dock::makeLayerSurfaceConfig(
-      cfg, shadowConfig, cfg.pinned.size() + shell::dock::dockLauncherButtonCount(cfg), instance->fractionalScale,
-      instance->outputLogicalWidth, instance->outputLogicalHeight
+      cfg, shadowConfig, instance->fractionalScale, instance->outputLogicalWidth, instance->outputLogicalHeight
   );
 
   instance->surface = std::make_unique<LayerSurface>(m_platform->wayland(), std::move(lsCfg));
